@@ -16,11 +16,11 @@ public class JsScripts {
             + "out.push({id:String(m.pk||m.id||''),user:m.user.username||'',avatar:m.user.profile_pic_url||'',text:(m.caption&&m.caption.text)||'',likes:m.like_count||0,comments:m.comment_count||0,img:img,vid:vid});});"
             + "if(out.length)return JSON.stringify({ok:true,items:out.slice(0,18)});}"
             + "}catch(e){}"
-            + "const arts=[...document.querySelectorAll('article')].slice(0,15).map((a,i)=>{"
-            + "const u=(a.querySelector('a[href^=\"/\"]')||{}).innerText||'utente';"
-            + "const im=(a.querySelector('img[src*=\"cdninstagram\"],img[src*=\"fbcdn\"]')||{}).src||'';"
-            + "const vd=(a.querySelector('video')||{}).src||'';"
-            + "return {id:'dom_'+i,user:u.split('\\n')[0],avatar:'',text:(a.innerText||'').slice(0,220),likes:0,comments:0,img:im,vid:vd};});"
+            + "const arts=[...document.querySelectorAll('article')].slice(0,15).map((a,i)=>({"
+            + "id:'dom_'+i,user:((a.querySelector('a[href^=\"/\"]')||{}).innerText||'utente').split('\\n')[0],avatar:'',"
+            + "text:(a.innerText||'').slice(0,220),likes:0,comments:0,"
+            + "img:(a.querySelector('img[src*=\"cdninstagram\"],img[src*=\"fbcdn\"]')||{}).src||'',"
+            + "vid:(a.querySelector('video')||{}).src||''}));"
             + "return JSON.stringify({ok:true,items:arts});})();";
     }
 
@@ -71,13 +71,27 @@ public class JsScripts {
                 : "/r/" + sub + "/hot.json?limit=20&raw_json=1";
         return "(async function(){try{"
             + "const r=await fetch(" + JSONObject.quote(path) + ",{credentials:'include'});"
-            + "const j=await r.json();return JSON.stringify(j);}catch(e){return JSON.stringify({error:String(e)});}})();";
+            + "return JSON.stringify(await r.json());}catch(e){return JSON.stringify({error:String(e)});}})();";
     }
 
     public static String redditComments(String permalink) {
         String clean = permalink.replaceAll("^https?://[^/]+", "").split("\\?")[0].replaceAll("/$", "") + ".json?limit=30&depth=3&raw_json=1";
         return "(async function(){try{"
             + "const r=await fetch(" + JSONObject.quote(clean) + ",{credentials:'include'});"
-            + "const j=await r.json();return JSON.stringify(j);}catch(e){return JSON.stringify({error:String(e)});}})();";
+            + "return JSON.stringify(await r.json());}catch(e){return JSON.stringify({error:String(e)});}})();";
+    }
+
+    public static String googleNewsFeed() {
+        return "(function(){try{"
+            + "const out=[],seen=new Set();"
+            + "document.querySelectorAll('article').forEach(a=>{"
+            + "const ls=[...a.querySelectorAll('a')].filter(l=>(l.innerText||'').trim().length>18);"
+            + "if(!ls.length)return;const m=ls[ls.length-1];const t=m.innerText.trim();"
+            + "if(seen.has(t))return;seen.add(t);"
+            + "const im=(a.querySelector('img[src^=\"http\"]')||{}).src||'';"
+            + "const sEl=a.querySelector('div[data-n-tid],span');"
+            + "const src=sEl?sEl.innerText.trim().split('\\n')[0]:'Google News';"
+            + "out.push({title:t,url:m.href||'',img:im,src:src});});"
+            + "return JSON.stringify({ok:true,items:out.slice(0,22)});}catch(e){return JSON.stringify({ok:false,err:String(e)});}})();";
     }
 }

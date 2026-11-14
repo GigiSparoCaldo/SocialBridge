@@ -14,6 +14,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.text.Html;
 import android.webkit.CookieManager;
 import android.webkit.WebView;
 import java.io.ByteArrayOutputStream;
@@ -26,6 +27,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URL;
 import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
@@ -34,6 +36,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 
@@ -41,6 +45,7 @@ public class BridgeService extends Service {
     public static final int PORT = 8765;
     public static volatile WebView igWeb;
     public static volatile WebView redditWeb;
+    public static volatile WebView newsWeb;
     public static volatile String pin = "1234";
 
     private ServerSocket serverSocket;
@@ -109,7 +114,9 @@ public class BridgeService extends Service {
                 return;
             }
 
-            if ("/notif".equals(path)) {
+            if ("/ping".equals(path)) {
+                sendJson(out, 200, "{\"ok\":true,\"app\":\"SocialBridge\"}");
+            } else if ("/notif".equals(path)) {
                 sendJson(out, 200, NotifService.getListJson());
             } else if ("/notif/reply".equals(path)) {
                 boolean ok = NotifService.sendReply(this, q.getOrDefault("key", ""), q.getOrDefault("text", ""));
@@ -136,7 +143,7 @@ public class BridgeService extends Service {
                 } else {
                     byte[] fb = NotifService.sharedFileBytes;
                     if (fb == null || fb.length == 0) { sendJson(out, 404, "{\"ok\":false,\"err\":\"Nessun file pronto\"}"); return; }
-                    String encName = java.net.URLEncoder.encode(NotifService.sharedFileName, "UTF-8");
+                    String encName = URLEncoder.encode(NotifService.sharedFileName, "UTF-8");
                     String hdr = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nX-Filename: " + encName
                             + "\r\nContent-Length: " + fb.length + "\r\nConnection: close\r\n\r\n";
                     out.write(hdr.getBytes(StandardCharsets.UTF_8));
@@ -145,6 +152,10 @@ public class BridgeService extends Service {
                 }
             } else if ("/img".equals(path)) {
                 serveCompressedImage(out, q.get("url"));
+            } else if ("/news/feed".equals(path)) {
+                sendJson(out, 200, evalJs(newsWeb, JsScripts.googleNewsFeed()));
+            } else if ("/news/article".equals(path)) {
+                sendJson(out, 200, fetchArticleJson(q.getOrDefault("url", "")));
             } else if ("/ig/feed".equals(path)) {
                 sendJson(out, 200, evalJs(igWeb, JsScripts.igFeed()));
             } else if ("/ig/stories".equals(path)) {
@@ -165,6 +176,52 @@ public class BridgeService extends Service {
                 sendJson(out, 404, "{\"ok\":false}");
             }
         } catch (Exception ignored) {}
+    }
+
+    private String fetchArticleJson(String rawUrl) {
+        try {
+            String cur = rawUrl;
+            String html = "";
+            for (int i = 0; i < 6; i++) {
+                HttpURLConnection c = (HttpURLConnection) new URL(cur).openConnection();
+                c.setInstanceFollowRedirects(false);
+                c.setConnectTimeout(8000);
+                c.setReadTimeout(10000);
+                c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
+                c.setRequestProperty("Cookie", "CONSENT=YES+cb.20260101-00-p0.it+FX+111");
+                int code = c.getResponseCode();
+                if (code >= 300 && code < 400) {
+                    String loc = c.getHeaderField("Location");
+                    c.disconnect();
+                    if (loc == null) break;
+                    cur = new URL(new URL(cur), loc).toString();
+                    continue;
+                }
+                try (InputStream is = c.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = is.read(buf)) != -1) out.write(buf, 0, n);
+                    html = new String(out.toByteArray(), StandardCharsets.UTF_8);
+                } finally { c.disconnect(); }
+                break;
+            }
+            String cleaned = html.replaceAll("(?is)<script.*?</script>", " ")
+                    .replaceAll("(?is)<style.*?</style>", " ")
+                    .replaceAll("(?is)<nav.*?</nav>", " ")
+                    .replaceAll("(?is)<footer.*?</footer>", " ");
+            Matcher m = Pattern.compile("(?is)<p\\b[^>]*>(.*?)</p>").matcher(cleaned);
+            StringBuilder sb = new StringBuilder();
+            while (m.find() && sb.length() < 4500) {
+                String p = Html.fromHtml(m.group(1).replaceAll("(?is)<[^>]+>", " "), Html.FROM_HTML_MODE_LEGACY)
+                        .toString().replaceAll("\\s+", " ").trim();
+                if (p.length() >= 35) sb.append(p).append("\n\n");
+            }
+            String txt = sb.toString().trim();
+            if (txt.isEmpty()) txt = "Anteprima non estraibile (articolo protetto o solo video).";
+            return new JSONObject().put("ok", true).put("text", txt).toString();
+        } catch (Exception e) {
+            return "{\"ok\":false,\"text\":\"Errore apertura articolo: " + e.getMessage() + "\"}";
+        }
     }
 
     private String getPhoneClipboard() {

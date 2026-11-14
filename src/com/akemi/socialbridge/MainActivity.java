@@ -25,14 +25,17 @@ import android.widget.TextView;
 import android.widget.Toast;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.util.Collections;
 import java.util.Random;
 
 public class MainActivity extends Activity {
     public static final String MOBILE_UA = "Mozilla/5.0 (Linux; Android 14; SM-F731B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
     private static final int PICK_FILE = 42;
 
-    private WebView igWeb;
-    private WebView redditWeb;
+    private WebView igWeb, redditWeb, newsWeb;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -54,31 +57,28 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.parseColor("#0B1120"));
 
-        // Riga 1: PIN + Permesso Notifiche + Invia File al Watch
         LinearLayout bar1 = new LinearLayout(this);
         bar1.setOrientation(LinearLayout.HORIZONTAL);
         bar1.setGravity(Gravity.CENTER_VERTICAL);
         bar1.setPadding(16, 12, 16, 6);
         bar1.setBackgroundColor(Color.parseColor("#111827"));
 
-        TextView pinTv = new TextView(this);
-        pinTv.setText("PIN: " + pin);
-        pinTv.setTextColor(Color.parseColor("#34D399"));
-        pinTv.setTextSize(13f);
-        pinTv.setPadding(0, 0, 12, 0);
-        bar1.addView(pinTv);
+        TextView infoTv = new TextView(this);
+        infoTv.setText("IP: " + getLocalIp() + ":8765 | PIN: " + pin);
+        infoTv.setTextColor(Color.parseColor("#34D399"));
+        infoTv.setTextSize(12f);
+        infoTv.setPadding(0, 0, 10, 0);
+        bar1.addView(infoTv);
 
         Button btnPerm = new Button(this);
-        btnPerm.setText("🔔 Permesso");
-        btnPerm.setTextSize(11f);
+        btnPerm.setText("🔔");
         btnPerm.setBackgroundColor(Color.parseColor("#1E293B"));
         btnPerm.setTextColor(Color.parseColor("#FBBF24"));
         btnPerm.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
         bar1.addView(btnPerm);
 
         Button btnFile = new Button(this);
-        btnFile.setText("📎 File→Watch");
-        btnFile.setTextSize(11f);
+        btnFile.setText("📎");
         btnFile.setBackgroundColor(Color.parseColor("#0284C7"));
         btnFile.setTextColor(Color.WHITE);
         btnFile.setOnClickListener(v -> {
@@ -90,82 +90,87 @@ public class MainActivity extends Activity {
         bar1.addView(btnFile);
         root.addView(bar1);
 
-        // Riga 2: Instagram | Reddit | Filtro Notifiche | Reload
         LinearLayout bar2 = new LinearLayout(this);
         bar2.setOrientation(LinearLayout.HORIZONTAL);
         bar2.setGravity(Gravity.CENTER_VERTICAL);
-        bar2.setPadding(16, 4, 16, 10);
+        bar2.setPadding(12, 4, 12, 8);
         bar2.setBackgroundColor(Color.parseColor("#111827"));
 
-        Button btnIg = new Button(this);
-        btnIg.setText("Instagram");
-        btnIg.setTextSize(11f);
-        btnIg.setBackgroundColor(Color.parseColor("#DB2777"));
-        btnIg.setTextColor(Color.WHITE);
+        final Button btnIg = new Button(this); btnIg.setText("Insta"); btnIg.setTextSize(11f);
+        btnIg.setBackgroundColor(Color.parseColor("#DB2777")); btnIg.setTextColor(Color.WHITE);
 
-        Button btnRd = new Button(this);
-        btnRd.setText("Reddit");
-        btnRd.setTextSize(11f);
-        btnRd.setBackgroundColor(Color.parseColor("#1E293B"));
-        btnRd.setTextColor(Color.WHITE);
+        final Button btnRd = new Button(this); btnRd.setText("Reddit"); btnRd.setTextSize(11f);
+        btnRd.setBackgroundColor(Color.parseColor("#1E293B")); btnRd.setTextColor(Color.WHITE);
+
+        final Button btnNw = new Button(this); btnNw.setText("News"); btnNw.setTextSize(11f);
+        btnNw.setBackgroundColor(Color.parseColor("#1E293B")); btnNw.setTextColor(Color.WHITE);
 
         final Button btnFilt = new Button(this);
-        btnFilt.setText(NotifService.onlyImportantApps ? "Filtro: Solo Banche/SMS" : "Filtro: Tutte le App");
-        btnFilt.setTextSize(10.5f);
+        btnFilt.setText(NotifService.onlyImportantApps ? "Banche/SMS" : "Tutte App");
+        btnFilt.setTextSize(10f);
         btnFilt.setBackgroundColor(Color.parseColor("#1E293B"));
         btnFilt.setTextColor(Color.parseColor("#38BDF8"));
         btnFilt.setOnClickListener(v -> {
             NotifService.onlyImportantApps = !NotifService.onlyImportantApps;
             prefs.edit().putBoolean("only_imp", NotifService.onlyImportantApps).apply();
-            btnFilt.setText(NotifService.onlyImportantApps ? "Filtro: Solo Banche/SMS" : "Filtro: Tutte le App");
+            btnFilt.setText(NotifService.onlyImportantApps ? "Banche/SMS" : "Tutte App");
         });
 
-        Button btnRel = new Button(this);
-        btnRel.setText("↻");
-        btnRel.setBackgroundColor(Color.parseColor("#1E293B"));
-        btnRel.setTextColor(Color.WHITE);
-
-        bar2.addView(btnIg);
-        bar2.addView(btnRd);
-        bar2.addView(btnFilt);
-        bar2.addView(btnRel);
+        bar2.addView(btnIg); bar2.addView(btnRd); bar2.addView(btnNw); bar2.addView(btnFilt);
         root.addView(bar2);
 
         FrameLayout stack = new FrameLayout(this);
         igWeb = buildWebView("https://www.instagram.com/");
         redditWeb = buildWebView("https://www.reddit.com/");
+        newsWeb = buildWebView("https://news.google.com/?hl=it&gl=IT&ceid=IT:it");
         redditWeb.setVisibility(View.GONE);
+        newsWeb.setVisibility(View.GONE);
 
         BridgeService.igWeb = igWeb;
         BridgeService.redditWeb = redditWeb;
+        BridgeService.newsWeb = newsWeb;
 
-        stack.addView(igWeb, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        stack.addView(redditWeb, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        root.addView(stack, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        FrameLayout.LayoutParams fp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        stack.addView(igWeb, fp); stack.addView(redditWeb, fp); stack.addView(newsWeb, fp);
+        root.addView(stack, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         btnIg.setOnClickListener(v -> {
-            igWeb.setVisibility(View.VISIBLE);
-            redditWeb.setVisibility(View.GONE);
+            igWeb.setVisibility(View.VISIBLE); redditWeb.setVisibility(View.GONE); newsWeb.setVisibility(View.GONE);
             btnIg.setBackgroundColor(Color.parseColor("#DB2777"));
+            btnRd.setBackgroundColor(Color.parseColor("#1E293B"));
+            btnNw.setBackgroundColor(Color.parseColor("#1E293B"));
+        });
+        btnRd.setOnClickListener(v -> {
+            redditWeb.setVisibility(View.VISIBLE); igWeb.setVisibility(View.GONE); newsWeb.setVisibility(View.GONE);
+            btnRd.setBackgroundColor(Color.parseColor("#EA580C"));
+            btnIg.setBackgroundColor(Color.parseColor("#1E293B"));
+            btnNw.setBackgroundColor(Color.parseColor("#1E293B"));
+        });
+        btnNw.setOnClickListener(v -> {
+            newsWeb.setVisibility(View.VISIBLE); igWeb.setVisibility(View.GONE); redditWeb.setVisibility(View.GONE);
+            btnNw.setBackgroundColor(Color.parseColor("#0284C7"));
+            btnIg.setBackgroundColor(Color.parseColor("#1E293B"));
             btnRd.setBackgroundColor(Color.parseColor("#1E293B"));
         });
 
-        btnRd.setOnClickListener(v -> {
-            redditWeb.setVisibility(View.VISIBLE);
-            igWeb.setVisibility(View.GONE);
-            btnRd.setBackgroundColor(Color.parseColor("#EA580C"));
-            btnIg.setBackgroundColor(Color.parseColor("#1E293B"));
-        });
-
-        btnRel.setOnClickListener(v -> {
-            if (igWeb.getVisibility() == View.VISIBLE) igWeb.reload();
-            else redditWeb.reload();
-        });
-
         setContentView(root);
+    }
+
+    private String getLocalIp() {
+        try {
+            String fallback = "127.0.0.1";
+            for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                for (InetAddress addr : Collections.list(ni.getInetAddresses())) {
+                    if (!addr.isLoopbackAddress() && addr instanceof Inet4Address) {
+                        String ip = addr.getHostAddress();
+                        if (ip != null && (ip.startsWith("192.168.") || ip.startsWith("10."))) return ip;
+                        if (ip != null) fallback = ip;
+                    }
+                }
+            }
+            return fallback;
+        } catch (Exception e) { return "127.0.0.1"; }
     }
 
     @Override
@@ -213,7 +218,8 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        WebView active = igWeb.getVisibility() == View.VISIBLE ? igWeb : redditWeb;
+        WebView active = igWeb.getVisibility() == View.VISIBLE ? igWeb
+                : redditWeb.getVisibility() == View.VISIBLE ? redditWeb : newsWeb;
         if (active.canGoBack()) active.goBack();
         else moveTaskToBack(true);
     }
