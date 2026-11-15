@@ -77,35 +77,6 @@ public class JsScripts {
             + "ok=r.ok;}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:ok}));})();";
     }
 
-    public static String redditFeed(String sub, String sort) {
-        String cleanSub = (sub == null) ? "" : sub.trim();
-        String path = cleanSub.isEmpty() ? "/.json?limit=20&raw_json=1"
-                : ("day".equals(sort) || "week".equals(sort) || "month".equals(sort))
-                ? "/r/" + cleanSub + "/top/.json?t=" + sort + "&limit=20&raw_json=1"
-                : "/r/" + cleanSub + "/hot/.json?limit=20&raw_json=1";
-        return "(async function(){let out=null;try{"
-            + "const r=await fetch(" + JSONObject.quote(path) + ",{credentials:'include'});"
-            + "const j=await r.json();if(j&&j.data&&j.data.children)out=j;"
-            + "}catch(e){}"
-            + "if(!out){const sp=[...document.querySelectorAll('shreddit-post')];"
-            + "const ch=sp.slice(0,20).map(p=>{const im=p.querySelector('img[src*=\"redd.it\"],img[src*=\"redditmedia\"]');"
-            + "return {data:{title:p.getAttribute('post-title')||'',author:p.getAttribute('author')||'',"
-            + "subreddit:(p.getAttribute('subreddit-prefixed-name')||'').replace(/^r\\//,''),"
-            + "score:parseInt(p.getAttribute('score')||'0',10)||0,"
-            + "num_comments:parseInt(p.getAttribute('comment-count')||'0',10)||0,"
-            + "permalink:p.getAttribute('permalink')||'',url:im?im.src:(p.getAttribute('content-href')||'')}};});"
-            + "out={data:{children:ch}};}"
-            + "AndroidBridge.done('__REQ_ID__',JSON.stringify(out));})();";
-    }
-
-    public static String redditComments(String permalink) {
-        String clean = permalink.replaceAll("^https?://[^/]+", "").split("\\?")[0].replaceAll("/$", "") + "/.json?limit=35&depth=4&raw_json=1";
-        return "(async function(){let out='[]';try{"
-            + "const r=await fetch(" + JSONObject.quote(clean) + ",{credentials:'include'});"
-            + "out=JSON.stringify(await r.json());}catch(e){}"
-            + "AndroidBridge.done('__REQ_ID__',out);})();";
-    }
-
     public static String googleNewsFeed() {
         return "(function(){const out=[],seen=new Set();try{"
             + "document.querySelectorAll('a[href*=\"/read/\"],a[href*=\"/articles/\"]').forEach(a=>{"
@@ -117,13 +88,57 @@ public class JsScripts {
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,items:out.slice(0,22)}));})();";
     }
 
-    public static String geminiAsk(String prompt) {
+    public static String geminiListChats() {
         return "(function(){try{"
+            + "const menuBtn=document.querySelector('button[aria-label*=\"Menu\"],button[aria-label*=\"menu\"],button[data-test-id=\"side-nav-menu-button\"]');"
+            + "if(menuBtn&&document.querySelectorAll('a[href*=\"/app/\"]').length<2)menuBtn.click();"
+            + "setTimeout(()=>{"
+            + "const seen=new Set(),chats=[];"
+            + "document.querySelectorAll('a[href*=\"/app/\"]').forEach(a=>{"
+            + "const href=a.href||'';const m=href.match(/\\/app\\/([a-zA-Z0-9_-]+)/);"
+            + "if(!m||seen.has(m[1]))return;seen.add(m[1]);"
+            + "const title=(a.textContent||'').trim().replace(/\\s+/g,' ');"
+            + "if(title.length>1)chats.push({id:m[1],title:title.slice(0,60),url:href});});"
+            + "AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,chats:chats.slice(0,25)}));"
+            + "},500);}catch(e){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,chats:[]}));}})();";
+    }
+
+    public static String geminiReadThread() {
+        return "(function(){try{"
+            + "const turns=[],seen=new Set();"
+            + "document.querySelectorAll('user-query,model-response,.user-query-text,.model-response-text').forEach(el=>{"
+            + "const tag=el.tagName.toLowerCase();const cls=(el.className||'').toString();"
+            + "const role=(tag.includes('user')||cls.includes('user'))?'Tu':'Gemini';"
+            + "const txt=(el.innerText||'').trim();"
+            + "const key=role+':'+txt.slice(0,40);"
+            + "if(txt.length>0&&!seen.has(key)){seen.add(key);turns.push({role:role,text:txt});}});"
+            + "AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,turns:turns.slice(-20)}));"
+            + "}catch(e){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,turns:[]}));}})();";
+    }
+
+    public static String geminiAsk(String prompt, String model, String think) {
+        String prefix = "alto".equals(think)
+                ? "[Istruzione: Usa ragionamento approfondito ad alto livello, analizza tutti i dettagli passo dopo passo prima di rispondere]\n"
+                : "basso".equals(think)
+                ? "[Istruzione: Risposta rapida a basso livello di ragionamento, sii sintetico e vai subito al punto in poche righe]\n"
+                : "";
+        String fullPrompt = prefix + prompt;
+        return "(function(){try{"
+            + "const mTarget=" + JSONObject.quote(model) + ";"
+            + "if(mTarget==='flash'||mTarget==='pro'){"
+            + "const sw=document.querySelector('button[data-test-id=\"bard-mode-menu-button\"],button.gds-mode-switch-button,button[aria-label*=\"modello\"],button[aria-label*=\"model\"]');"
+            + "if(sw)sw.click();"
+            + "setTimeout(()=>{"
+            + "const opts=[...document.querySelectorAll('[role=\"menuitem\"],[role=\"option\"],mat-option,button')];"
+            + "const hit=opts.find(o=>{const t=(o.innerText||'').toLowerCase();return mTarget==='pro'?(t.includes('pro')||t.includes('thinking')||t.includes('ragionamento')):(t.includes('flash')||t.includes('veloce'));});"
+            + "if(hit)hit.click();"
+            + "},250);}"
+            + "setTimeout(()=>{"
             + "const ed=document.querySelector('div.ql-editor,[contenteditable=\"true\"],textarea');"
             + "if(!ed){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:'Apri scheda Gemini su Z Flip e accedi a Google'}));return;}"
             + "ed.focus();ed.textContent='';"
-            + "document.execCommand('insertText',false," + JSONObject.quote(prompt) + ");"
-            + "if(!ed.textContent)ed.textContent=" + JSONObject.quote(prompt) + ";"
+            + "document.execCommand('insertText',false," + JSONObject.quote(fullPrompt) + ");"
+            + "if(!ed.textContent)ed.textContent=" + JSONObject.quote(fullPrompt) + ";"
             + "ed.dispatchEvent(new Event('input',{bubbles:true}));"
             + "const prevCnt=document.querySelectorAll('model-response,.model-response-text,message-content').length;"
             + "setTimeout(()=>{"
@@ -134,9 +149,9 @@ public class JsScripts {
             + "const nodes=document.querySelectorAll('model-response,.model-response-text,message-content');"
             + "const cur=nodes.length>prevCnt?nodes[nodes.length-1].innerText.trim():(nodes.length?nodes[nodes.length-1].innerText.trim():'');"
             + "if(cur&&cur===last)same++;else{last=cur;same=0;}"
-            + "if((same>=2&&cur.length>1)||tries>28){clearInterval(iv);"
+            + "if((same>=2&&cur.length>1)||tries>32){clearInterval(iv);"
             + "AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,reply:cur||'Nessuna risposta ricevuta.'}));}"
-            + "},700);},450);"
+            + "},750);},450);},450);"
             + "}catch(e){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:String(e)}));}})();";
     }
 }

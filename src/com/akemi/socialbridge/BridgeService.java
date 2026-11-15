@@ -49,6 +49,7 @@ import org.xmlpull.v1.XmlPullParserFactory;
 
 public class BridgeService extends Service {
     public static final int PORT = 8765;
+    private static final String UA_REDDIT = "android:com.akemi.wristsocial:v1.5 (by /u/akemi_watch)";
     public static volatile WebView igWeb, redditWeb, newsWeb, geminiWeb;
     public static volatile String pin = "1234";
 
@@ -76,12 +77,6 @@ public class BridgeService extends Service {
         super.onCreate();
         pin = getSharedPreferences("bridge_prefs", MODE_PRIVATE).getString("pin", "1234");
         NotifService.onlyImportantApps = getSharedPreferences("bridge_prefs", MODE_PRIVATE).getBoolean("only_imp", false);
-        startForegroundNotif();
-        running = true;
-        pool.execute(this::listenLoop);
-    }
-
-    private void startForegroundNotif() {
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel("sb_ch", "SocialBridge", NotificationManager.IMPORTANCE_LOW);
             getSystemService(NotificationManager.class).createNotificationChannel(ch);
@@ -92,6 +87,8 @@ public class BridgeService extends Service {
                     .build();
             startForeground(101, n);
         }
+        running = true;
+        pool.execute(this::listenLoop);
     }
 
     private void listenLoop() {
@@ -132,22 +129,18 @@ public class BridgeService extends Service {
                 return;
             }
 
-            if ("/ping".equals(path)) {
-                sendJson(out, 200, "{\"ok\":true}");
-            } else if ("/notif".equals(path)) {
-                sendJson(out, 200, NotifService.getListJson());
-            } else if ("/notif/reply".equals(path)) {
-                sendJson(out, 200, "{\"ok\":" + NotifService.sendReply(this, q.getOrDefault("key", ""), q.getOrDefault("text", "")) + "}");
-            } else if ("/clip".equals(path)) {
+            if ("/ping".equals(path)) sendJson(out, 200, "{\"ok\":true}");
+            else if ("/notif".equals(path)) sendJson(out, 200, NotifService.getListJson());
+            else if ("/notif/reply".equals(path)) sendJson(out, 200, "{\"ok\":" + NotifService.sendReply(this, q.getOrDefault("key", ""), q.getOrDefault("text", "")) + "}");
+            else if ("/clip".equals(path)) {
                 if ("POST".equalsIgnoreCase(method) && contentLen > 0) {
                     String txt = new String(readExact(rawIn, contentLen), StandardCharsets.UTF_8);
                     NotifService.sharedClip = txt;
                     setPhoneClipboard(txt);
                     sendJson(out, 200, "{\"ok\":true}");
                 } else {
-                    String phoneClip = getPhoneClipboard();
-                    String active = !phoneClip.isEmpty() ? phoneClip : NotifService.sharedClip;
-                    sendJson(out, 200, new JSONObject().put("ok", true).put("text", active).toString());
+                    String pc = getPhoneClipboard();
+                    sendJson(out, 200, new JSONObject().put("ok", true).put("text", !pc.isEmpty() ? pc : NotifService.sharedClip).toString());
                 }
             } else if ("/file".equals(path)) {
                 if ("POST".equalsIgnoreCase(method) && contentLen > 0) {
@@ -160,48 +153,79 @@ public class BridgeService extends Service {
                 } else {
                     byte[] fb = NotifService.sharedFileBytes;
                     if (fb == null || fb.length == 0) { sendJson(out, 404, "{\"ok\":false}"); return; }
-                    String hdr = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nX-Filename: "
-                            + URLEncoder.encode(NotifService.sharedFileName, "UTF-8")
-                            + "\r\nContent-Length: " + fb.length + "\r\nConnection: close\r\n\r\n";
-                    out.write(hdr.getBytes(StandardCharsets.UTF_8));
-                    out.write(fb);
-                    out.flush();
+                    String hdr = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nX-Filename: " + URLEncoder.encode(NotifService.sharedFileName, "UTF-8") + "\r\nContent-Length: " + fb.length + "\r\nConnection: close\r\n\r\n";
+                    out.write(hdr.getBytes(StandardCharsets.UTF_8)); out.write(fb); out.flush();
                 }
-            } else if ("/img".equals(path)) {
-                serveCompressedImage(out, q.get("url"));
-            } else if ("/vid".equals(path)) {
-                serveVideoProxy(out, q.get("url"));
-            } else if ("/gemini/ask".equals(path)) {
-                sendJson(out, 200, evalJs(geminiWeb, JsScripts.geminiAsk(q.getOrDefault("q", "")), 25));
-            } else if ("/news/feed".equals(path)) {
+            } else if ("/img".equals(path)) serveCompressedImage(out, q.get("url"));
+            else if ("/vid".equals(path)) serveVideoProxy(out, q.get("url"));
+            else if ("/gemini/chats".equals(path)) sendJson(out, 200, evalJs(geminiWeb, JsScripts.geminiListChats(), 8));
+            else if ("/gemini/open".equals(path)) sendJson(out, 200, openGeminiChat(q.getOrDefault("url", "")));
+            else if ("/gemini/new".equals(path)) { loadGeminiUrl("https://gemini.google.com/app"); sendJson(out, 200, "{\"ok\":true}"); }
+            else if ("/gemini/ask".equals(path)) sendJson(out, 200, evalJs(geminiWeb, JsScripts.geminiAsk(q.getOrDefault("q", ""), q.getOrDefault("model", "auto"), q.getOrDefault("think", "medio")), 28));
+            else if ("/news/feed".equals(path)) {
                 String domJson = evalJs(newsWeb, JsScripts.googleNewsFeed(), 8);
                 JSONArray arr = new JSONObject(domJson).optJSONArray("items");
-                if (arr != null && arr.length() > 0) sendJson(out, 200, domJson);
-                else sendJson(out, 200, fetchGoogleNewsRssFallback());
-            } else if ("/news/article".equals(path)) {
-                sendJson(out, 200, fetchArticleJson(q.getOrDefault("url", "")));
-            } else if ("/ig/feed".equals(path)) {
-                sendJson(out, 200, evalJs(igWeb, JsScripts.igFeed(), 10));
-            } else if ("/ig/stories".equals(path)) {
-                sendJson(out, 200, evalJs(igWeb, JsScripts.igStories(), 10));
-            } else if ("/ig/story".equals(path)) {
-                sendJson(out, 200, evalJs(igWeb, JsScripts.igStoryMedia(q.getOrDefault("id", "")), 10));
-            } else if ("/ig/comments".equals(path)) {
-                sendJson(out, 200, evalJs(igWeb, JsScripts.igComments(q.getOrDefault("id", "")), 10));
-            } else if ("/ig/like".equals(path)) {
-                sendJson(out, 200, evalJs(igWeb, JsScripts.igLike(q.getOrDefault("id", "")), 8));
-            } else if ("/ig/dm".equals(path)) {
-                sendJson(out, 200, evalJs(igWeb, JsScripts.igDmInbox(), 10));
-            } else if ("/ig/dm_send".equals(path)) {
-                sendJson(out, 200, evalJs(igWeb, JsScripts.igDmSend(q.getOrDefault("id", ""), q.getOrDefault("text", "")), 10));
-            } else if ("/reddit/feed".equals(path)) {
-                sendJson(out, 200, evalJs(redditWeb, JsScripts.redditFeed(q.getOrDefault("sub", ""), q.getOrDefault("sort", "hot")), 10));
-            } else if ("/reddit/comments".equals(path)) {
-                sendJson(out, 200, evalJs(redditWeb, JsScripts.redditComments(q.getOrDefault("url", "")), 10));
-            } else {
-                sendJson(out, 404, "{\"ok\":false}");
-            }
+                sendJson(out, 200, (arr != null && arr.length() > 0) ? domJson : fetchGoogleNewsRssFallback());
+            } else if ("/news/article".equals(path)) sendJson(out, 200, fetchArticleJson(q.getOrDefault("url", "")));
+            else if ("/ig/feed".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igFeed(), 10));
+            else if ("/ig/stories".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igStories(), 10));
+            else if ("/ig/story".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igStoryMedia(q.getOrDefault("id", "")), 10));
+            else if ("/ig/comments".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igComments(q.getOrDefault("id", "")), 10));
+            else if ("/ig/like".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igLike(q.getOrDefault("id", "")), 8));
+            else if ("/ig/dm".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igDmInbox(), 10));
+            else if ("/ig/dm_send".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igDmSend(q.getOrDefault("id", ""), q.getOrDefault("text", "")), 10));
+            else if ("/reddit/feed".equals(path)) sendJson(out, 200, fetchRedditJson(buildRedditFeedUrl(q.getOrDefault("sub", ""), q.getOrDefault("sort", "hot"))));
+            else if ("/reddit/comments".equals(path)) sendJson(out, 200, fetchRedditJson(buildRedditCommentsUrl(q.getOrDefault("url", ""))));
+            else sendJson(out, 404, "{\"ok\":false}");
         } catch (Exception ignored) {}
+    }
+
+    private String buildRedditFeedUrl(String sub, String sort) {
+        String s = sub == null ? "" : sub.trim();
+        if (s.isEmpty()) return "https://www.reddit.com/.json?limit=20&raw_json=1";
+        if ("day".equals(sort) || "week".equals(sort) || "month".equals(sort)) {
+            return "https://www.reddit.com/r/" + s + "/top.json?t=" + sort + "&limit=20&raw_json=1";
+        }
+        return "https://www.reddit.com/r/" + s + "/hot.json?limit=20&raw_json=1";
+    }
+
+    private String buildRedditCommentsUrl(String permalink) {
+        String clean = permalink.replaceAll("^https?://[^/]+", "").split("\\?")[0].replaceAll("/$", "");
+        if (!clean.startsWith("/")) clean = "/" + clean;
+        return "https://www.reddit.com" + clean + ".json?limit=35&depth=4&raw_json=1";
+    }
+
+    private String fetchRedditJson(String urlStr) {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(11000);
+            c.setRequestProperty("User-Agent", UA_REDDIT);
+            c.setRequestProperty("Accept", "application/json");
+            String ck = CookieManager.getInstance().getCookie("https://www.reddit.com");
+            if (ck != null && !ck.isEmpty()) c.setRequestProperty("Cookie", ck);
+            try (InputStream is = c.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                byte[] buf = new byte[8192]; int n;
+                while ((n = is.read(buf)) != -1) out.write(buf, 0, n);
+                return new String(out.toByteArray(), StandardCharsets.UTF_8);
+            } finally { c.disconnect(); }
+        } catch (Exception e) {
+            return "{\"error\":\"" + e.getMessage() + "\"}";
+        }
+    }
+
+    private void loadGeminiUrl(final String url) {
+        if (geminiWeb == null) return;
+        mainHandler.post(() -> {
+            try { geminiWeb.onResume(); geminiWeb.resumeTimers(); geminiWeb.loadUrl(url); } catch (Exception ignored) {}
+        });
+    }
+
+    private String openGeminiChat(String url) {
+        if (url == null || url.isEmpty()) return "{\"ok\":false,\"turns\":[]}";
+        loadGeminiUrl(url);
+        try { Thread.sleep(2400); } catch (InterruptedException ignored) {}
+        return evalJs(geminiWeb, JsScripts.geminiReadThread(), 8);
     }
 
     private String evalJs(final WebView wv, final String script, int timeoutSec) {
@@ -223,20 +247,16 @@ public class BridgeService extends Service {
     private void serveVideoProxy(OutputStream out, String vidUrl) throws Exception {
         if (vidUrl == null || vidUrl.isEmpty()) { sendJson(out, 400, "{}"); return; }
         HttpURLConnection c = (HttpURLConnection) new URL(vidUrl).openConnection();
-        c.setConnectTimeout(9000);
-        c.setReadTimeout(15000);
+        c.setConnectTimeout(9000); c.setReadTimeout(15000);
         c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
         String cookie = CookieManager.getInstance().getCookie(vidUrl);
         if (cookie != null) c.setRequestProperty("Cookie", cookie);
         try (InputStream is = c.getInputStream(); ByteArrayOutputStream raw = new ByteArrayOutputStream()) {
-            byte[] buf = new byte[16384];
-            int n;
+            byte[] buf = new byte[16384]; int n;
             while ((n = is.read(buf)) != -1 && raw.size() < 8 * 1024 * 1024) raw.write(buf, 0, n);
             byte[] data = raw.toByteArray();
             String hdr = "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: " + data.length + "\r\nConnection: close\r\n\r\n";
-            out.write(hdr.getBytes(StandardCharsets.UTF_8));
-            out.write(data);
-            out.flush();
+            out.write(hdr.getBytes(StandardCharsets.UTF_8)); out.write(data); out.flush();
         } finally { c.disconnect(); }
     }
 
