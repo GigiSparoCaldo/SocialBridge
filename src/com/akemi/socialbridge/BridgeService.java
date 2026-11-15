@@ -16,12 +16,14 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.text.Html;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.StringReader;
 import java.net.HttpURLConnection;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -31,6 +33,8 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -38,15 +42,29 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.json.JSONArray;
 import org.json.JSONObject;
-import org.json.JSONTokener;
+import org.xmlpull.v1.XmlPullParser;
+import org.xmlpull.v1.XmlPullParserFactory;
 
 public class BridgeService extends Service {
     public static final int PORT = 8765;
-    public static volatile WebView igWeb;
-    public static volatile WebView redditWeb;
-    public static volatile WebView newsWeb;
+    public static volatile WebView igWeb, redditWeb, newsWeb;
     public static volatile String pin = "1234";
+
+    private static final ConcurrentHashMap<String, CountDownLatch> latches = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, String> results = new ConcurrentHashMap<>();
+
+    public static class JsCallback {
+        @JavascriptInterface
+        public void done(String reqId, String json) {
+            if (reqId != null && json != null) {
+                results.put(reqId, json);
+                CountDownLatch l = latches.get(reqId);
+                if (l != null) l.countDown();
+            }
+        }
+    }
 
     private ServerSocket serverSocket;
     private final ExecutorService pool = Executors.newCachedThreadPool();
@@ -115,12 +133,11 @@ public class BridgeService extends Service {
             }
 
             if ("/ping".equals(path)) {
-                sendJson(out, 200, "{\"ok\":true,\"app\":\"SocialBridge\"}");
+                sendJson(out, 200, "{\"ok\":true}");
             } else if ("/notif".equals(path)) {
                 sendJson(out, 200, NotifService.getListJson());
             } else if ("/notif/reply".equals(path)) {
-                boolean ok = NotifService.sendReply(this, q.getOrDefault("key", ""), q.getOrDefault("text", ""));
-                sendJson(out, 200, "{\"ok\":" + ok + "}");
+                sendJson(out, 200, "{\"ok\":" + NotifService.sendReply(this, q.getOrDefault("key", ""), q.getOrDefault("text", "")) + "}");
             } else if ("/clip".equals(path)) {
                 if ("POST".equalsIgnoreCase(method) && contentLen > 0) {
                     String txt = new String(readExact(rawIn, contentLen), StandardCharsets.UTF_8);
@@ -142,9 +159,9 @@ public class BridgeService extends Service {
                     sendJson(out, 200, new JSONObject().put("ok", true).put("saved", dest.getName()).toString());
                 } else {
                     byte[] fb = NotifService.sharedFileBytes;
-                    if (fb == null || fb.length == 0) { sendJson(out, 404, "{\"ok\":false,\"err\":\"Nessun file pronto\"}"); return; }
-                    String encName = URLEncoder.encode(NotifService.sharedFileName, "UTF-8");
-                    String hdr = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nX-Filename: " + encName
+                    if (fb == null || fb.length == 0) { sendJson(out, 404, "{\"ok\":false}"); return; }
+                    String hdr = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nX-Filename: "
+                            + URLEncoder.encode(NotifService.sharedFileName, "UTF-8")
                             + "\r\nContent-Length: " + fb.length + "\r\nConnection: close\r\n\r\n";
                     out.write(hdr.getBytes(StandardCharsets.UTF_8));
                     out.write(fb);
@@ -153,7 +170,10 @@ public class BridgeService extends Service {
             } else if ("/img".equals(path)) {
                 serveCompressedImage(out, q.get("url"));
             } else if ("/news/feed".equals(path)) {
-                sendJson(out, 200, evalJs(newsWeb, JsScripts.googleNewsFeed()));
+                String domJson = evalJs(newsWeb, JsScripts.googleNewsFeed());
+                JSONArray arr = new JSONObject(domJson).optJSONArray("items");
+                if (arr != null && arr.length() > 0) sendJson(out, 200, domJson);
+                else sendJson(out, 200, fetchGoogleNewsRssFallback());
             } else if ("/news/article".equals(path)) {
                 sendJson(out, 200, fetchArticleJson(q.getOrDefault("url", "")));
             } else if ("/ig/feed".equals(path)) {
@@ -176,6 +196,62 @@ public class BridgeService extends Service {
                 sendJson(out, 404, "{\"ok\":false}");
             }
         } catch (Exception ignored) {}
+    }
+
+    private String evalJs(final WebView wv, final String script) {
+        if (wv == null) return "{\"ok\":false,\"err\":\"Apri SocialBridge sullo Z Flip\"}";
+        final String reqId = UUID.randomUUID().toString();
+        final CountDownLatch latch = new CountDownLatch(1);
+        latches.put(reqId, latch);
+        final String readyJs = script.replace("__REQ_ID__", reqId);
+        mainHandler.post(() -> wv.evaluateJavascript(readyJs, null));
+        try { latch.await(9, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+        latches.remove(reqId);
+        String res = results.remove(reqId);
+        return (res != null && !res.isEmpty()) ? res : "{\"ok\":false,\"err\":\"Timeout JS\"}";
+    }
+
+    private String fetchGoogleNewsRssFallback() {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL("https://news.google.com/rss?hl=it&gl=IT&ceid=IT:it").openConnection();
+            c.setConnectTimeout(7000);
+            c.setReadTimeout(9000);
+            c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            try (InputStream is = c.getInputStream()) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = is.read(buf)) != -1) out.write(buf, 0, n);
+            }
+            String xml = new String(out.toByteArray(), StandardCharsets.UTF_8);
+            int first = xml.indexOf('<');
+            if (first > 0) xml = xml.substring(first);
+
+            XmlPullParserFactory f = XmlPullParserFactory.newInstance();
+            XmlPullParser xpp = f.newPullParser();
+            xpp.setInput(new StringReader(xml));
+            JSONArray items = new JSONArray();
+            String title = "", link = "";
+            boolean inItem = false;
+            int ev = xpp.getEventType();
+            while (ev != XmlPullParser.END_DOCUMENT && items.length() < 20) {
+                String tag = xpp.getName() != null ? xpp.getName().toLowerCase() : "";
+                if (ev == XmlPullParser.START_TAG) {
+                    if ("item".equals(tag)) { inItem = true; title = ""; link = ""; }
+                    else if (inItem && "title".equals(tag)) title = Html.fromHtml(xpp.nextText(), Html.FROM_HTML_MODE_LEGACY).toString();
+                    else if (inItem && "link".equals(tag)) link = xpp.nextText().trim();
+                } else if (ev == XmlPullParser.END_TAG && "item".equals(tag) && inItem) {
+                    inItem = false;
+                    if (!title.isEmpty()) {
+                        items.put(new JSONObject().put("title", title).put("url", link).put("img", "").put("src", "Google News"));
+                    }
+                }
+                ev = xpp.next();
+            }
+            return new JSONObject().put("ok", true).put("items", items).toString();
+        } catch (Exception e) {
+            return "{\"ok\":true,\"items\":[]}";
+        }
     }
 
     private String fetchArticleJson(String rawUrl) {
@@ -217,7 +293,7 @@ public class BridgeService extends Service {
                 if (p.length() >= 35) sb.append(p).append("\n\n");
             }
             String txt = sb.toString().trim();
-            if (txt.isEmpty()) txt = "Anteprima non estraibile (articolo protetto o solo video).";
+            if (txt.isEmpty()) txt = "Anteprima non estraibile (articolo protetto).";
             return new JSONObject().put("ok", true).put("text", txt).toString();
         } catch (Exception e) {
             return "{\"ok\":false,\"text\":\"Errore apertura articolo: " + e.getMessage() + "\"}";
@@ -270,23 +346,6 @@ public class BridgeService extends Service {
             off += n;
         }
         return data;
-    }
-
-    private String evalJs(final WebView wv, final String script) {
-        if (wv == null) return "{\"ok\":false,\"err\":\"Apri SocialBridge sullo Z Flip\"}";
-        final CountDownLatch latch = new CountDownLatch(1);
-        final AtomicReference<String> ref = new AtomicReference<>("{\"ok\":false,\"err\":\"Timeout JS\"}");
-        mainHandler.post(() -> wv.evaluateJavascript(script, val -> {
-            try {
-                if (val != null && !"null".equals(val)) {
-                    Object parsed = new JSONTokener(val).nextValue();
-                    ref.set(parsed instanceof String ? (String) parsed : val);
-                }
-            } catch (Exception e) { ref.set("{\"ok\":false}"); }
-            finally { latch.countDown(); }
-        }));
-        try { latch.await(8, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
-        return ref.get();
     }
 
     private void serveCompressedImage(OutputStream out, String imgUrl) throws Exception {

@@ -212,6 +212,7 @@ public class MainActivity extends Activity {
         s.setUserAgentString(MOBILE_UA);
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true);
+        wv.addJavascriptInterface(new BridgeService.JsCallback(), "AndroidBridge");
         wv.setWebViewClient(new WebViewClient());
         wv.loadUrl(startUrl);
         return wv;
