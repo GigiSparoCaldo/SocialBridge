@@ -244,6 +244,13 @@ public class JsScripts {
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,items:out.slice(0,22)}));})();";
     }
 
+    public static String geminiStop() {
+        return "(function(){window.__gemAbort=true;try{"
+            + "const st=document.querySelector('button[aria-label*=\"Interrompi\"],button[aria-label*=\"Stop\"],button[data-test-id=\"stop-button\"]');"
+            + "if(st)st.click();"
+            + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true}));})();";
+    }
+
     public static String geminiListModels() {
         return "(function(){try{"
             + "const btns=[...document.querySelectorAll('button')];"
@@ -292,7 +299,7 @@ public class JsScripts {
                 : "basso".equals(think)
                 ? "[Risposta rapida e sintetica in poche righe]\n" : "";
         String fullPrompt = prefix + prompt;
-        return "(function(){try{"
+        return "(function(){window.__gemAbort=false;try{"
             + "const mTarget=(" + JSONObject.quote(model) + "||'').toLowerCase();"
             + "if(mTarget&&mTarget!=='auto'){"
             + "const sw=[...document.querySelectorAll('button')].find(b=>{const t=(b.innerText||'').toLowerCase();return b.getAttribute('data-test-id')==='bard-mode-menu-button'||t.includes('gemini')||t.includes('flash')||t.includes('hydrogen')||t.includes('carbon')||t.includes('pro');});"
@@ -300,11 +307,11 @@ public class JsScripts {
             + "setTimeout(()=>{"
             + "const opts=[...document.querySelectorAll('[role=\"menuitem\"],[role=\"option\"],mat-option,.gds-mode-menu-item')];"
             + "const hit=opts.find(o=>(o.innerText||'').toLowerCase().includes(mTarget));"
-            + "if(hit)hit.click();"
-            + "},300);}"
+            + "if(hit)hit.click();},300);}"
             + "setTimeout(()=>{"
+            + "if(window.__gemAbort){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:'Interrotto.'}));return;}"
             + "const ed=document.querySelector('div.ql-editor,[contenteditable=\"true\"],textarea');"
-            + "if(!ed){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:'Apri scheda Gemini su Z Flip e accedi a Google'}));return;}"
+            + "if(!ed){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:'Apri scheda Gemini su Z Flip'}));return;}"
             + "ed.focus();ed.textContent='';"
             + "document.execCommand('insertText',false," + JSONObject.quote(fullPrompt) + ");"
             + "if(!ed.textContent)ed.textContent=" + JSONObject.quote(fullPrompt) + ";"
@@ -315,12 +322,47 @@ public class JsScripts {
             + "if(btn)btn.click();"
             + "let last='',same=0,tries=0;"
             + "const iv=setInterval(()=>{tries++;"
+            + "if(window.__gemAbort){clearInterval(iv);AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:'Interrotto.'}));return;}"
             + "const nodes=document.querySelectorAll('model-response,.model-response-text,message-content');"
             + "const cur=nodes.length>prevCnt?nodes[nodes.length-1].innerText.trim():(nodes.length?nodes[nodes.length-1].innerText.trim():'');"
             + "if(cur&&cur===last)same++;else{last=cur;same=0;}"
-            + "if((same>=2&&cur.length>1)||tries>32){clearInterval(iv);"
-            + "AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,reply:cur||'Nessuna risposta ricevuta.'}));}"
+            + "if((same>=2&&cur.length>1)||tries>34){clearInterval(iv);"
+            + "AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,reply:cur||'Nessuna risposta.'}));}"
             + "},750);},450);},500);"
+            + "}catch(e){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:String(e)}));}})();";
+    }
+
+    public static String geminiEdit(String idxStr, String prompt, String model, String think) {
+        String prefix = "alto".equals(think)
+                ? "[Usa ragionamento approfondito passo dopo passo prima di rispondere]\n"
+                : "basso".equals(think)
+                ? "[Risposta rapida e sintetica in poche righe]\n" : "";
+        String fullPrompt = prefix + prompt;
+        return "(function(){window.__gemAbort=false;try{"
+            + "const idx=parseInt(" + JSONObject.quote(idxStr) + ",10)||0;"
+            + "const uqs=[...document.querySelectorAll('user-query')];"
+            + "const uq=uqs.length>idx?uqs[uqs.length-1-idx]:null;"
+            + "if(uq){uq.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));}"
+            + "const editBtn=uq?uq.querySelector('button[aria-label*=\"Modifica\"],button[aria-label*=\"Edit\"]'):null;"
+            + "if(!editBtn){" + geminiAsk(prompt, model, think).replaceFirst("^\\(function\\(\\)\\{", "") + ""
+            + "editBtn.click();"
+            + "setTimeout(()=>{"
+            + "const box=uq.querySelector('textarea,div.ql-editor,[contenteditable=\"true\"]');"
+            + "if(!box){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:'Campo modifica non trovato'}));return;}"
+            + "box.focus();if('value' in box)box.value=" + JSONObject.quote(fullPrompt) + ";else box.textContent=" + JSONObject.quote(fullPrompt) + ";"
+            + "box.dispatchEvent(new Event('input',{bubbles:true}));box.dispatchEvent(new Event('change',{bubbles:true}));"
+            + "setTimeout(()=>{"
+            + "const upd=uq.querySelector('button[aria-label*=\"Aggiorna\"],button[aria-label*=\"Update\"],button[aria-label*=\"Invia\"],button[aria-label*=\"Send\"]')||[...uq.querySelectorAll('button')].pop();"
+            + "if(upd)upd.click();"
+            + "let last='',same=0,tries=0;"
+            + "const iv=setInterval(()=>{tries++;"
+            + "if(window.__gemAbort){clearInterval(iv);AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:'Interrotto.'}));return;}"
+            + "const nodes=document.querySelectorAll('model-response,.model-response-text,message-content');"
+            + "const cur=nodes.length?nodes[nodes.length-1].innerText.trim():'';"
+            + "if(cur&&cur===last)same++;else{last=cur;same=0;}"
+            + "if((same>=2&&cur.length>1)||tries>34){clearInterval(iv);"
+            + "AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,reply:cur||'Nessuna risposta.'}));}"
+            + "},750);},300);},350);"
             + "}catch(e){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:String(e)}));}})();";
     }
 }

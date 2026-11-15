@@ -151,6 +151,8 @@ public class BridgeService extends Service {
             else if ("/gemini/chats".equals(path)) sendJson(out, 200, evalJs(geminiWeb, JsScripts.geminiListChats(), 8));
             else if ("/gemini/open".equals(path)) sendJson(out, 200, openGeminiChat(q.getOrDefault("url", "")));
             else if ("/gemini/new".equals(path)) { loadGeminiUrl("https://gemini.google.com/app"); sendJson(out, 200, "{\"ok\":true}"); }
+            else if ("/gemini/stop".equals(path)) sendJson(out, 200, evalJs(geminiWeb, JsScripts.geminiStop(), 5));
+            else if ("/gemini/edit".equals(path)) sendJson(out, 200, evalJs(geminiWeb, JsScripts.geminiEdit(q.getOrDefault("idx", "0"), q.getOrDefault("q", ""), q.getOrDefault("model", "auto"), q.getOrDefault("think", "medio")), 28));
             else if ("/gemini/ask".equals(path)) sendJson(out, 200, evalJs(geminiWeb, JsScripts.geminiAsk(q.getOrDefault("q", ""), q.getOrDefault("model", "auto"), q.getOrDefault("think", "medio")), 28));
             else if ("/news/feed".equals(path)) {
                 String domJson = evalJs(newsWeb, JsScripts.googleNewsFeed(), 8);
