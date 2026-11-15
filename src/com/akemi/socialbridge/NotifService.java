@@ -5,6 +5,7 @@ import android.app.RemoteInput;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
+import android.os.Parcelable;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 import java.text.SimpleDateFormat;
@@ -24,7 +25,8 @@ public class NotifService extends NotificationListenerService {
         public RemoteInput remoteInput;
     }
 
-    private static final int MAX_ITEMS = 35;
+    private static volatile NotifService instance;
+    private static final int MAX_ITEMS = 40;
     private static final LinkedHashMap<String, NotifItem> buffer = new LinkedHashMap<String, NotifItem>(MAX_ITEMS + 2, 0.75f, false) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, NotifItem> eldest) {
@@ -38,18 +40,42 @@ public class NotifService extends NotificationListenerService {
     public static volatile boolean onlyImportantApps = false;
 
     @Override
+    public void onCreate() {
+        super.onCreate();
+        instance = this;
+    }
+
+    @Override
+    public void onListenerConnected() {
+        super.onListenerConnected();
+        instance = this;
+        syncActive();
+    }
+
+    public void syncActive() {
+        try {
+            StatusBarNotification[] active = getActiveNotifications();
+            if (active != null) {
+                for (StatusBarNotification sbn : active) ingest(sbn);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
+        instance = this;
+        ingest(sbn);
+    }
+
+    private void ingest(StatusBarNotification sbn) {
         if (sbn == null) return;
         Notification n = sbn.getNotification();
         if (n == null) return;
-
-        // Filtro consumo zero: scarta subito notifiche continue (musica, timer, download, servizi fissi)
         if ((n.flags & Notification.FLAG_ONGOING_EVENT) != 0) return;
         if ((n.flags & Notification.FLAG_FOREGROUND_SERVICE) != 0) return;
 
         String pkg = sbn.getPackageName();
         if (pkg == null || pkg.equals(getPackageName()) || pkg.contains("btbridge") || "android".equals(pkg)) return;
-
         if (onlyImportantApps && !isPriorityApp(pkg)) return;
 
         Bundle ex = n.extras;
@@ -57,6 +83,24 @@ public class NotifService extends NotificationListenerService {
         String title = String.valueOf(ex.getCharSequence(Notification.EXTRA_TITLE, "")).trim();
         CharSequence big = ex.getCharSequence(Notification.EXTRA_BIG_TEXT);
         String text = String.valueOf(big != null ? big : ex.getCharSequence(Notification.EXTRA_TEXT, "")).trim();
+
+        Parcelable[] msgs = ex.getParcelableArray(Notification.EXTRA_MESSAGES);
+        if (msgs != null && msgs.length > 0) {
+            StringBuilder sb = new StringBuilder();
+            for (Parcelable p : msgs) {
+                if (p instanceof Bundle) {
+                    Bundle mb = (Bundle) p;
+                    CharSequence sender = mb.getCharSequence("sender");
+                    CharSequence mText = mb.getCharSequence("text");
+                    if (mText != null) {
+                        if (sb.length() > 0) sb.append("\n");
+                        if (sender != null && sender.length() > 0) sb.append(sender).append(": ");
+                        sb.append(mText);
+                    }
+                }
+            }
+            if (sb.length() > 0) text = sb.toString();
+        }
         if (title.isEmpty() && text.isEmpty()) return;
 
         NotifItem item = new NotifItem();
@@ -76,7 +120,6 @@ public class NotifService extends NotificationListenerService {
                 }
             }
         }
-
         synchronized (buffer) {
             buffer.remove(item.key);
             buffer.put(item.key, item);
@@ -104,6 +147,7 @@ public class NotifService extends NotificationListenerService {
     }
 
     public static String getListJson() {
+        if (instance != null) instance.syncActive();
         try {
             JSONArray arr = new JSONArray();
             synchronized (buffer) {

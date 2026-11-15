@@ -49,7 +49,7 @@ import org.xmlpull.v1.XmlPullParserFactory;
 
 public class BridgeService extends Service {
     public static final int PORT = 8765;
-    public static volatile WebView igWeb, redditWeb, newsWeb;
+    public static volatile WebView igWeb, redditWeb, newsWeb, geminiWeb;
     public static volatile String pin = "1234";
 
     private static final ConcurrentHashMap<String, CountDownLatch> latches = new ConcurrentHashMap<>();
@@ -169,66 +169,91 @@ public class BridgeService extends Service {
                 }
             } else if ("/img".equals(path)) {
                 serveCompressedImage(out, q.get("url"));
+            } else if ("/vid".equals(path)) {
+                serveVideoProxy(out, q.get("url"));
+            } else if ("/gemini/ask".equals(path)) {
+                sendJson(out, 200, evalJs(geminiWeb, JsScripts.geminiAsk(q.getOrDefault("q", "")), 25));
             } else if ("/news/feed".equals(path)) {
-                String domJson = evalJs(newsWeb, JsScripts.googleNewsFeed());
+                String domJson = evalJs(newsWeb, JsScripts.googleNewsFeed(), 8);
                 JSONArray arr = new JSONObject(domJson).optJSONArray("items");
                 if (arr != null && arr.length() > 0) sendJson(out, 200, domJson);
                 else sendJson(out, 200, fetchGoogleNewsRssFallback());
             } else if ("/news/article".equals(path)) {
                 sendJson(out, 200, fetchArticleJson(q.getOrDefault("url", "")));
             } else if ("/ig/feed".equals(path)) {
-                sendJson(out, 200, evalJs(igWeb, JsScripts.igFeed()));
+                sendJson(out, 200, evalJs(igWeb, JsScripts.igFeed(), 10));
             } else if ("/ig/stories".equals(path)) {
-                sendJson(out, 200, evalJs(igWeb, JsScripts.igStories()));
+                sendJson(out, 200, evalJs(igWeb, JsScripts.igStories(), 10));
             } else if ("/ig/story".equals(path)) {
-                sendJson(out, 200, evalJs(igWeb, JsScripts.igStoryMedia(q.getOrDefault("id", ""))));
+                sendJson(out, 200, evalJs(igWeb, JsScripts.igStoryMedia(q.getOrDefault("id", "")), 10));
+            } else if ("/ig/comments".equals(path)) {
+                sendJson(out, 200, evalJs(igWeb, JsScripts.igComments(q.getOrDefault("id", "")), 10));
             } else if ("/ig/like".equals(path)) {
-                sendJson(out, 200, evalJs(igWeb, JsScripts.igLike(q.getOrDefault("id", ""))));
+                sendJson(out, 200, evalJs(igWeb, JsScripts.igLike(q.getOrDefault("id", "")), 8));
             } else if ("/ig/dm".equals(path)) {
-                sendJson(out, 200, evalJs(igWeb, JsScripts.igDmInbox()));
+                sendJson(out, 200, evalJs(igWeb, JsScripts.igDmInbox(), 10));
             } else if ("/ig/dm_send".equals(path)) {
-                sendJson(out, 200, evalJs(igWeb, JsScripts.igDmSend(q.getOrDefault("id", ""), q.getOrDefault("text", ""))));
+                sendJson(out, 200, evalJs(igWeb, JsScripts.igDmSend(q.getOrDefault("id", ""), q.getOrDefault("text", "")), 10));
             } else if ("/reddit/feed".equals(path)) {
-                sendJson(out, 200, evalJs(redditWeb, JsScripts.redditFeed(q.getOrDefault("sub", ""), q.getOrDefault("sort", "hot"))));
+                sendJson(out, 200, evalJs(redditWeb, JsScripts.redditFeed(q.getOrDefault("sub", ""), q.getOrDefault("sort", "hot")), 10));
             } else if ("/reddit/comments".equals(path)) {
-                sendJson(out, 200, evalJs(redditWeb, JsScripts.redditComments(q.getOrDefault("url", ""))));
+                sendJson(out, 200, evalJs(redditWeb, JsScripts.redditComments(q.getOrDefault("url", "")), 10));
             } else {
                 sendJson(out, 404, "{\"ok\":false}");
             }
         } catch (Exception ignored) {}
     }
 
-    private String evalJs(final WebView wv, final String script) {
+    private String evalJs(final WebView wv, final String script, int timeoutSec) {
         if (wv == null) return "{\"ok\":false,\"err\":\"Apri SocialBridge sullo Z Flip\"}";
         final String reqId = UUID.randomUUID().toString();
         final CountDownLatch latch = new CountDownLatch(1);
         latches.put(reqId, latch);
         final String readyJs = script.replace("__REQ_ID__", reqId);
-        mainHandler.post(() -> wv.evaluateJavascript(readyJs, null));
-        try { latch.await(9, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+        mainHandler.post(() -> {
+            try { wv.onResume(); wv.resumeTimers(); } catch (Exception ignored) {}
+            wv.evaluateJavascript(readyJs, null);
+        });
+        try { latch.await(timeoutSec, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
         latches.remove(reqId);
         String res = results.remove(reqId);
         return (res != null && !res.isEmpty()) ? res : "{\"ok\":false,\"err\":\"Timeout JS\"}";
     }
 
+    private void serveVideoProxy(OutputStream out, String vidUrl) throws Exception {
+        if (vidUrl == null || vidUrl.isEmpty()) { sendJson(out, 400, "{}"); return; }
+        HttpURLConnection c = (HttpURLConnection) new URL(vidUrl).openConnection();
+        c.setConnectTimeout(9000);
+        c.setReadTimeout(15000);
+        c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
+        String cookie = CookieManager.getInstance().getCookie(vidUrl);
+        if (cookie != null) c.setRequestProperty("Cookie", cookie);
+        try (InputStream is = c.getInputStream(); ByteArrayOutputStream raw = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[16384];
+            int n;
+            while ((n = is.read(buf)) != -1 && raw.size() < 8 * 1024 * 1024) raw.write(buf, 0, n);
+            byte[] data = raw.toByteArray();
+            String hdr = "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: " + data.length + "\r\nConnection: close\r\n\r\n";
+            out.write(hdr.getBytes(StandardCharsets.UTF_8));
+            out.write(data);
+            out.flush();
+        } finally { c.disconnect(); }
+    }
+
     private String fetchGoogleNewsRssFallback() {
         try {
             HttpURLConnection c = (HttpURLConnection) new URL("https://news.google.com/rss?hl=it&gl=IT&ceid=IT:it").openConnection();
-            c.setConnectTimeout(7000);
-            c.setReadTimeout(9000);
+            c.setConnectTimeout(7000); c.setReadTimeout(9000);
             c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             try (InputStream is = c.getInputStream()) {
-                byte[] buf = new byte[8192];
-                int n;
+                byte[] buf = new byte[8192]; int n;
                 while ((n = is.read(buf)) != -1) out.write(buf, 0, n);
             }
             String xml = new String(out.toByteArray(), StandardCharsets.UTF_8);
             int first = xml.indexOf('<');
             if (first > 0) xml = xml.substring(first);
-
-            XmlPullParserFactory f = XmlPullParserFactory.newInstance();
-            XmlPullParser xpp = f.newPullParser();
+            XmlPullParser xpp = XmlPullParserFactory.newInstance().newPullParser();
             xpp.setInput(new StringReader(xml));
             JSONArray items = new JSONArray();
             String title = "", link = "";
@@ -242,49 +267,38 @@ public class BridgeService extends Service {
                     else if (inItem && "link".equals(tag)) link = xpp.nextText().trim();
                 } else if (ev == XmlPullParser.END_TAG && "item".equals(tag) && inItem) {
                     inItem = false;
-                    if (!title.isEmpty()) {
-                        items.put(new JSONObject().put("title", title).put("url", link).put("img", "").put("src", "Google News"));
-                    }
+                    if (!title.isEmpty()) items.put(new JSONObject().put("title", title).put("url", link).put("img", "").put("src", "Google News"));
                 }
                 ev = xpp.next();
             }
             return new JSONObject().put("ok", true).put("items", items).toString();
-        } catch (Exception e) {
-            return "{\"ok\":true,\"items\":[]}";
-        }
+        } catch (Exception e) { return "{\"ok\":true,\"items\":[]}"; }
     }
 
     private String fetchArticleJson(String rawUrl) {
         try {
-            String cur = rawUrl;
-            String html = "";
+            String cur = rawUrl, html = "";
             for (int i = 0; i < 6; i++) {
                 HttpURLConnection c = (HttpURLConnection) new URL(cur).openConnection();
                 c.setInstanceFollowRedirects(false);
-                c.setConnectTimeout(8000);
-                c.setReadTimeout(10000);
+                c.setConnectTimeout(8000); c.setReadTimeout(10000);
                 c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
                 c.setRequestProperty("Cookie", "CONSENT=YES+cb.20260101-00-p0.it+FX+111");
                 int code = c.getResponseCode();
                 if (code >= 300 && code < 400) {
-                    String loc = c.getHeaderField("Location");
-                    c.disconnect();
+                    String loc = c.getHeaderField("Location"); c.disconnect();
                     if (loc == null) break;
-                    cur = new URL(new URL(cur), loc).toString();
-                    continue;
+                    cur = new URL(new URL(cur), loc).toString(); continue;
                 }
                 try (InputStream is = c.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-                    byte[] buf = new byte[8192];
-                    int n;
+                    byte[] buf = new byte[8192]; int n;
                     while ((n = is.read(buf)) != -1) out.write(buf, 0, n);
                     html = new String(out.toByteArray(), StandardCharsets.UTF_8);
                 } finally { c.disconnect(); }
                 break;
             }
-            String cleaned = html.replaceAll("(?is)<script.*?</script>", " ")
-                    .replaceAll("(?is)<style.*?</style>", " ")
-                    .replaceAll("(?is)<nav.*?</nav>", " ")
-                    .replaceAll("(?is)<footer.*?</footer>", " ");
+            String cleaned = html.replaceAll("(?is)<script.*?</script>", " ").replaceAll("(?is)<style.*?</style>", " ")
+                    .replaceAll("(?is)<nav.*?</nav>", " ").replaceAll("(?is)<footer.*?</footer>", " ");
             Matcher m = Pattern.compile("(?is)<p\\b[^>]*>(.*?)</p>").matcher(cleaned);
             StringBuilder sb = new StringBuilder();
             while (m.find() && sb.length() < 4500) {
@@ -295,9 +309,7 @@ public class BridgeService extends Service {
             String txt = sb.toString().trim();
             if (txt.isEmpty()) txt = "Anteprima non estraibile (articolo protetto).";
             return new JSONObject().put("ok", true).put("text", txt).toString();
-        } catch (Exception e) {
-            return "{\"ok\":false,\"text\":\"Errore apertura articolo: " + e.getMessage() + "\"}";
-        }
+        } catch (Exception e) { return "{\"ok\":false,\"text\":\"Errore apertura articolo: " + e.getMessage() + "\"}"; }
     }
 
     private String getPhoneClipboard() {
@@ -329,36 +341,25 @@ public class BridgeService extends Service {
     private String readLine(InputStream in) throws Exception {
         ByteArrayOutputStream buf = new ByteArrayOutputStream();
         int b;
-        while ((b = in.read()) != -1) {
-            if (b == '\n') break;
-            if (b != '\r') buf.write(b);
-        }
-        if (b == -1 && buf.size() == 0) return null;
-        return new String(buf.toByteArray(), StandardCharsets.UTF_8);
+        while ((b = in.read()) != -1) { if (b == '\n') break; if (b != '\r') buf.write(b); }
+        return (b == -1 && buf.size() == 0) ? null : new String(buf.toByteArray(), StandardCharsets.UTF_8);
     }
 
     private byte[] readExact(InputStream in, int len) throws Exception {
-        byte[] data = new byte[len];
-        int off = 0;
-        while (off < len) {
-            int n = in.read(data, off, len - off);
-            if (n < 0) break;
-            off += n;
-        }
+        byte[] data = new byte[len]; int off = 0;
+        while (off < len) { int n = in.read(data, off, len - off); if (n < 0) break; off += n; }
         return data;
     }
 
     private void serveCompressedImage(OutputStream out, String imgUrl) throws Exception {
         if (imgUrl == null || imgUrl.isEmpty()) { sendJson(out, 400, "{}"); return; }
         HttpURLConnection c = (HttpURLConnection) new URL(imgUrl).openConnection();
-        c.setConnectTimeout(8000);
-        c.setReadTimeout(10000);
+        c.setConnectTimeout(8000); c.setReadTimeout(10000);
         c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
         String cookie = CookieManager.getInstance().getCookie(imgUrl);
         if (cookie != null) c.setRequestProperty("Cookie", cookie);
         try (InputStream is = c.getInputStream(); ByteArrayOutputStream raw = new ByteArrayOutputStream()) {
-            byte[] buf = new byte[8192];
-            int n;
+            byte[] buf = new byte[8192]; int n;
             while ((n = is.read(buf)) != -1) raw.write(buf, 0, n);
             byte[] bytes = raw.toByteArray();
             BitmapFactory.Options o = new BitmapFactory.Options();
@@ -366,16 +367,14 @@ public class BridgeService extends Service {
             BitmapFactory.decodeByteArray(bytes, 0, bytes.length, o);
             int sample = 1;
             while (o.outWidth / sample > 420) sample *= 2;
-            o.inJustDecodeBounds = false;
-            o.inSampleSize = sample;
+            o.inJustDecodeBounds = false; o.inSampleSize = sample;
             Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, o);
             ByteArrayOutputStream jpg = new ByteArrayOutputStream();
             bmp.compress(Bitmap.CompressFormat.JPEG, 72, jpg);
             byte[] outBytes = jpg.toByteArray();
             String hdr = "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: " + outBytes.length + "\r\nConnection: close\r\n\r\n";
             out.write(hdr.getBytes(StandardCharsets.UTF_8));
-            out.write(outBytes);
-            out.flush();
+            out.write(outBytes); out.flush();
         } finally { c.disconnect(); }
     }
 
@@ -383,8 +382,7 @@ public class BridgeService extends Service {
         byte[] b = json.getBytes(StandardCharsets.UTF_8);
         String hdr = "HTTP/1.1 " + code + " OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: " + b.length + "\r\nConnection: close\r\n\r\n";
         out.write(hdr.getBytes(StandardCharsets.UTF_8));
-        out.write(b);
-        out.flush();
+        out.write(b); out.flush();
     }
 
     private Map<String, String> parseQuery(String full) {
@@ -394,10 +392,8 @@ public class BridgeService extends Service {
         for (String pair : full.substring(q + 1).split("&")) {
             int eq = pair.indexOf('=');
             if (eq > 0) {
-                try {
-                    map.put(URLDecoder.decode(pair.substring(0, eq), "UTF-8"),
-                            URLDecoder.decode(pair.substring(eq + 1), "UTF-8"));
-                } catch (Exception ignored) {}
+                try { map.put(URLDecoder.decode(pair.substring(0, eq), "UTF-8"), URLDecoder.decode(pair.substring(eq + 1), "UTF-8")); }
+                catch (Exception ignored) {}
             }
         }
         return map;
