@@ -1,29 +1,34 @@
 package com.akemi.socialbridge;
 
+import android.annotation.SuppressLint;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
+import android.content.MutableContextWrapper;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.os.Build;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.text.Html;
+import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.WebSettings;
 import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.StringReader;
 import java.net.HttpURLConnection;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -40,18 +45,16 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import org.json.JSONArray;
 import org.json.JSONObject;
-import org.xmlpull.v1.XmlPullParser;
-import org.xmlpull.v1.XmlPullParserFactory;
 
 public class BridgeService extends Service {
     public static final int PORT = 8765;
-    public static volatile WebView igWeb, redditWeb, newsWeb, geminiWeb;
     public static volatile String pin = "1234";
+    public static volatile boolean uiVisible = false;
+    private static volatile BridgeService self;
 
+    private static final ConcurrentHashMap<String, WebView> poolWv = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, MutableContextWrapper> poolCtx = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, CountDownLatch> latches = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, String> results = new ConcurrentHashMap<>();
 
@@ -69,18 +72,25 @@ public class BridgeService extends Service {
     private ServerSocket serverSocket;
     private final ExecutorService pool = Executors.newCachedThreadPool();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Runnable sleepRunnable = () -> {
+        if (uiVisible) return;
+        for (WebView wv : poolWv.values()) {
+            try { wv.onPause(); wv.pauseTimers(); } catch (Exception ignored) {}
+        }
+    };
     private volatile boolean running = false;
 
     @Override
     public void onCreate() {
         super.onCreate();
+        self = this;
         pin = getSharedPreferences("bridge_prefs", MODE_PRIVATE).getString("pin", "1234");
         NotifService.onlyImportantApps = getSharedPreferences("bridge_prefs", MODE_PRIVATE).getBoolean("only_imp", false);
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel("sb_ch", "SocialBridge", NotificationManager.IMPORTANCE_LOW);
             getSystemService(NotificationManager.class).createNotificationChannel(ch);
             Notification n = new Notification.Builder(this, "sb_ch")
-                    .setContentTitle("SocialBridge + WristDrop")
+                    .setContentTitle("SocialBridge Eco-Ponte")
                     .setContentText("Porta " + PORT + " • PIN: " + pin)
                     .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
                     .build();
@@ -88,6 +98,54 @@ public class BridgeService extends Service {
         }
         running = true;
         pool.execute(this::listenLoop);
+    }
+
+    public static String startUrlFor(String key) {
+        if ("ig".equals(key)) return "https://www.instagram.com/";
+        if ("fb".equals(key)) return "https://m.facebook.com/";
+        if ("gemini".equals(key)) return "https://gemini.google.com/app";
+        if ("reddit".equals(key)) return "https://www.reddit.com/";
+        return "https://news.google.com/?hl=it&gl=IT&ceid=IT:it";
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    public static WebView getOrCreateWebView(Context ctx, String key) {
+        WebView existing = poolWv.get(key);
+        if (existing != null) {
+            MutableContextWrapper mcw = poolCtx.get(key);
+            if (mcw != null) mcw.setBaseContext(ctx);
+            return existing;
+        }
+        MutableContextWrapper mcw = new MutableContextWrapper(ctx);
+        WebView wv = new WebView(mcw);
+        wv.setBackgroundColor(Color.parseColor("#0B1120"));
+        WebSettings s = wv.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setUserAgentString(MainActivity.MOBILE_UA);
+        CookieManager.getInstance().setAcceptCookie(true);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true);
+        wv.addJavascriptInterface(new JsCallback(), "AndroidBridge");
+        wv.setWebViewClient(new WebViewClient());
+        wv.loadUrl(startUrlFor(key));
+        poolCtx.put(key, mcw);
+        poolWv.put(key, wv);
+        return wv;
+    }
+
+    public static void detachAllFromUi(Context appCtx) {
+        for (Map.Entry<String, WebView> e : poolWv.entrySet()) {
+            WebView wv = e.getValue();
+            if (wv.getParent() instanceof ViewGroup) ((ViewGroup) wv.getParent()).removeView(wv);
+            MutableContextWrapper mcw = poolCtx.get(e.getKey());
+            if (mcw != null) mcw.setBaseContext(appCtx);
+        }
+        if (self != null) self.scheduleSleep();
+    }
+
+    private void scheduleSleep() {
+        mainHandler.removeCallbacks(sleepRunnable);
+        mainHandler.postDelayed(sleepRunnable, 6000);
     }
 
     private void listenLoop() {
@@ -147,72 +205,79 @@ public class BridgeService extends Service {
                 }
             } else if ("/img".equals(path)) serveCompressedImage(out, q.get("url"));
             else if ("/vid".equals(path)) serveVideoProxy(out, q.get("url"));
-            else if ("/gemini/models".equals(path)) sendJson(out, 200, evalJs(geminiWeb, JsScripts.geminiListModels(), 8));
-            else if ("/gemini/chats".equals(path)) sendJson(out, 200, evalJs(geminiWeb, JsScripts.geminiListChats(), 8));
-            else if ("/gemini/open".equals(path)) sendJson(out, 200, openGeminiChat(q.getOrDefault("url", "")));
-            else if ("/gemini/new".equals(path)) { loadGeminiUrl("https://gemini.google.com/app"); sendJson(out, 200, "{\"ok\":true}"); }
-            else if ("/gemini/stop".equals(path)) sendJson(out, 200, evalJs(geminiWeb, JsScripts.geminiStop(), 5));
-            else if ("/gemini/edit".equals(path)) sendJson(out, 200, evalJs(geminiWeb, JsScripts.geminiEdit(q.getOrDefault("idx", "0"), q.getOrDefault("q", ""), q.getOrDefault("model", "auto"), q.getOrDefault("think", "medio")), 28));
-            else if ("/gemini/ask".equals(path)) sendJson(out, 200, evalJs(geminiWeb, JsScripts.geminiAsk(q.getOrDefault("q", ""), q.getOrDefault("model", "auto"), q.getOrDefault("think", "medio")), 28));
-            else if ("/news/feed".equals(path)) {
-                String domJson = evalJs(newsWeb, JsScripts.googleNewsFeed(), 8);
-                JSONArray arr = new JSONObject(domJson).optJSONArray("items");
-                sendJson(out, 200, (arr != null && arr.length() > 0) ? domJson : fetchGoogleNewsRssFallback());
-            } else if ("/news/article".equals(path)) sendJson(out, 200, fetchArticleJson(q.getOrDefault("url", "")));
-            else if ("/ig/feed".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igFeed(q.getOrDefault("max_id", "")), 10));
-            else if ("/ig/explore".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igExplore(), 10));
-            else if ("/ig/saved".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igSaved(), 10));
-            else if ("/ig/stories".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igStories(), 10));
-            else if ("/ig/story".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igStoryMedia(q.getOrDefault("id", "")), 10));
-            else if ("/ig/profile".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igProfile(q.getOrDefault("user", "")), 10));
-            else if ("/ig/follow".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igFollow(q.getOrDefault("id", ""), "1".equals(q.get("unfollow"))), 8));
-            else if ("/ig/search".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igSearch(q.getOrDefault("q", "")), 8));
-            else if ("/ig/comments".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igComments(q.getOrDefault("id", "")), 10));
-            else if ("/ig/comment_add".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igAddComment(q.getOrDefault("id", ""), q.getOrDefault("text", "")), 10));
-            else if ("/ig/like".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igLike(q.getOrDefault("id", "")), 8));
-            else if ("/ig/dm".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igDmInbox(), 10));
-            else if ("/ig/dm_thread".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igDmThread(q.getOrDefault("id", "")), 10));
-            else if ("/ig/dm_send".equals(path)) sendJson(out, 200, evalJs(igWeb, JsScripts.igDmSend(q.getOrDefault("id", ""), q.getOrDefault("text", "")), 10));
-            else if ("/reddit/feed".equals(path)) sendJson(out, 200, evalJs(redditWeb, JsScripts.redditFeed(q.getOrDefault("sub", ""), q.getOrDefault("sort", "hot"), q.getOrDefault("after", "")), 10));
-            else if ("/reddit/comments".equals(path)) sendJson(out, 200, evalJs(redditWeb, JsScripts.redditComments(q.getOrDefault("url", "")), 10));
-            else if ("/reddit/user".equals(path)) sendJson(out, 200, evalJs(redditWeb, JsScripts.redditUser(q.getOrDefault("u", "")), 10));
-            else if ("/reddit/sub_info".equals(path)) sendJson(out, 200, evalJs(redditWeb, JsScripts.redditSubInfo(q.getOrDefault("sub", "")), 8));
-            else if ("/reddit/sub_toggle".equals(path)) sendJson(out, 200, evalJs(redditWeb, JsScripts.redditAction("/api/subscribe", "action=" + ("1".equals(q.get("unsub")) ? "unsub" : "sub") + "&sr_name=" + URLEncoder.encode(q.getOrDefault("sub", ""), "UTF-8")), 8));
-            else if ("/reddit/search".equals(path)) sendJson(out, 200, evalJs(redditWeb, JsScripts.redditSearch(q.getOrDefault("q", "")), 10));
-            else if ("/reddit/saved".equals(path)) sendJson(out, 200, evalJs(redditWeb, JsScripts.redditSaved(), 10));
-            else if ("/reddit/vote".equals(path)) sendJson(out, 200, evalJs(redditWeb, JsScripts.redditAction("/api/vote", "id=" + URLEncoder.encode(q.getOrDefault("id", ""), "UTF-8") + "&dir=" + q.getOrDefault("dir", "1")), 8));
-            else if ("/reddit/save".equals(path)) sendJson(out, 200, evalJs(redditWeb, JsScripts.redditAction("/api/save", "id=" + URLEncoder.encode(q.getOrDefault("id", ""), "UTF-8")), 8));
-            else if ("/reddit/comment_add".equals(path)) sendJson(out, 200, evalJs(redditWeb, JsScripts.redditAction("/api/comment", "thing_id=" + URLEncoder.encode(q.getOrDefault("thing", ""), "UTF-8") + "&text=" + URLEncoder.encode(q.getOrDefault("text", ""), "UTF-8")), 10));
+            else if ("/news/feed".equals(path)) sendJson(out, 200, NativeSocialHttp.googleNewsRss());
+            else if ("/news/article".equals(path)) sendJson(out, 200, NativeSocialHttp.fetchArticleJson(q.getOrDefault("url", "")));
+            else if ("/reddit/feed".equals(path)) sendJson(out, 200, NativeSocialHttp.redditFeed(q.getOrDefault("sub", ""), q.getOrDefault("sort", "hot"), q.getOrDefault("after", "")));
+            else if ("/reddit/comments".equals(path)) sendJson(out, 200, NativeSocialHttp.redditComments(q.getOrDefault("url", "")));
+            else if ("/reddit/user".equals(path)) sendJson(out, 200, NativeSocialHttp.redditUser(q.getOrDefault("u", "")));
+            else if ("/reddit/sub_info".equals(path)) sendJson(out, 200, NativeSocialHttp.redditSubInfo(q.getOrDefault("sub", "")));
+            else if ("/reddit/sub_toggle".equals(path)) sendJson(out, 200, NativeSocialHttp.redditPost("/api/subscribe", "action=" + ("1".equals(q.get("unsub")) ? "unsub" : "sub") + "&sr_name=" + URLEncoder.encode(q.getOrDefault("sub", ""), "UTF-8")));
+            else if ("/reddit/search".equals(path)) sendJson(out, 200, NativeSocialHttp.redditSearch(q.getOrDefault("q", "")));
+            else if ("/reddit/saved".equals(path)) sendJson(out, 200, NativeSocialHttp.redditSaved());
+            else if ("/reddit/vote".equals(path)) sendJson(out, 200, NativeSocialHttp.redditPost("/api/vote", "id=" + URLEncoder.encode(q.getOrDefault("id", ""), "UTF-8") + "&dir=" + q.getOrDefault("dir", "1")));
+            else if ("/reddit/save".equals(path)) sendJson(out, 200, NativeSocialHttp.redditPost("/api/save", "id=" + URLEncoder.encode(q.getOrDefault("id", ""), "UTF-8")));
+            else if ("/reddit/comment_add".equals(path)) sendJson(out, 200, NativeSocialHttp.redditPost("/api/comment", "thing_id=" + URLEncoder.encode(q.getOrDefault("thing", ""), "UTF-8") + "&text=" + URLEncoder.encode(q.getOrDefault("text", ""), "UTF-8")));
+            else if ("/fb/feed".equals(path)) sendJson(out, 200, evalLazy("fb", JsScripts.fbFeed(false), 10));
+            else if ("/fb/more".equals(path)) sendJson(out, 200, evalLazy("fb", JsScripts.fbFeed(true), 10));
+            else if ("/fb/like".equals(path)) sendJson(out, 200, evalLazy("fb", JsScripts.fbLike(q.getOrDefault("id", "0")), 6));
+            else if ("/fb/open".equals(path)) sendJson(out, 200, loadAndRead("fb", q.getOrDefault("url", "https://m.facebook.com/"), JsScripts.fbReadPage()));
+            else if ("/fb/comment_add".equals(path)) sendJson(out, 200, evalLazy("fb", JsScripts.fbPostComment(q.getOrDefault("text", "")), 8));
+            else if ("/gemini/stop".equals(path)) sendJson(out, 200, evalLazy("gemini", JsScripts.geminiStop(), 5));
+            else if ("/gemini/models".equals(path)) sendJson(out, 200, evalLazy("gemini", JsScripts.geminiListModels(), 8));
+            else if ("/gemini/chats".equals(path)) sendJson(out, 200, evalLazy("gemini", JsScripts.geminiListChats(), 8));
+            else if ("/gemini/open".equals(path)) sendJson(out, 200, loadAndRead("gemini", q.getOrDefault("url", ""), JsScripts.geminiReadThread()));
+            else if ("/gemini/new".equals(path)) { loadUrl("gemini", "https://gemini.google.com/app"); sendJson(out, 200, "{\"ok\":true}"); }
+            else if ("/gemini/ask".equals(path)) sendJson(out, 200, evalLazy("gemini", JsScripts.geminiAsk(q.getOrDefault("q", ""), q.getOrDefault("model", "auto"), q.getOrDefault("think", "medio")), 28));
+            else if ("/gemini/edit".equals(path)) sendJson(out, 200, evalLazy("gemini", JsScripts.geminiEdit(q.getOrDefault("idx", "0"), q.getOrDefault("q", ""), q.getOrDefault("model", "auto"), q.getOrDefault("think", "medio")), 28));
+            else if ("/ig/feed".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igFeed(q.getOrDefault("max_id", "")), 10));
+            else if ("/ig/explore".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igExplore(), 10));
+            else if ("/ig/saved".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igSaved(), 10));
+            else if ("/ig/stories".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igStories(), 10));
+            else if ("/ig/story".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igStoryMedia(q.getOrDefault("id", "")), 10));
+            else if ("/ig/profile".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igProfile(q.getOrDefault("user", "")), 10));
+            else if ("/ig/follow".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igFollow(q.getOrDefault("id", ""), "1".equals(q.get("unfollow"))), 8));
+            else if ("/ig/search".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igSearch(q.getOrDefault("q", "")), 8));
+            else if ("/ig/comments".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igComments(q.getOrDefault("id", "")), 10));
+            else if ("/ig/comment_add".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igAddComment(q.getOrDefault("id", ""), q.getOrDefault("text", "")), 10));
+            else if ("/ig/like".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igLike(q.getOrDefault("id", "")), 8));
+            else if ("/ig/dm".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igDmInbox(), 10));
+            else if ("/ig/dm_thread".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igDmThread(q.getOrDefault("id", "")), 10));
+            else if ("/ig/dm_send".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igDmSend(q.getOrDefault("id", ""), q.getOrDefault("text", "")), 10));
             else sendJson(out, 404, "{\"ok\":false}");
         } catch (Exception ignored) {}
     }
 
-    private void loadGeminiUrl(final String url) {
-        if (geminiWeb == null) return;
+    private void loadUrl(final String key, final String url) {
         mainHandler.post(() -> {
-            try { geminiWeb.onResume(); geminiWeb.resumeTimers(); geminiWeb.loadUrl(url); } catch (Exception ignored) {}
+            WebView wv = getOrCreateWebView(getApplicationContext(), key);
+            wv.onResume(); wv.resumeTimers(); wv.loadUrl(url);
         });
+        scheduleSleep();
     }
 
-    private String openGeminiChat(String url) {
-        if (url == null || url.isEmpty()) return "{\"ok\":false,\"turns\":[]}";
-        loadGeminiUrl(url);
-        try { Thread.sleep(2400); } catch (InterruptedException ignored) {}
-        return evalJs(geminiWeb, JsScripts.geminiReadThread(), 8);
+    private String loadAndRead(String key, String url, String readScript) {
+        if (url == null || url.isEmpty()) return "{\"ok\":false}";
+        boolean wasNew = !poolWv.containsKey(key);
+        loadUrl(key, url);
+        try { Thread.sleep(wasNew ? 3200 : 2200); } catch (InterruptedException ignored) {}
+        return evalLazy(key, readScript, 8);
     }
 
-    private String evalJs(final WebView wv, final String script, int timeoutSec) {
-        if (wv == null) return "{\"ok\":false,\"err\":\"Apri SocialBridge sullo Z Flip\"}";
+    private String evalLazy(final String key, final String script, int timeoutSec) {
+        final boolean wasNew = !poolWv.containsKey(key);
         final String reqId = UUID.randomUUID().toString();
         final CountDownLatch latch = new CountDownLatch(1);
         latches.put(reqId, latch);
         final String readyJs = script.replace("__REQ_ID__", reqId);
         mainHandler.post(() -> {
-            try { wv.onResume(); wv.resumeTimers(); } catch (Exception ignored) {}
-            wv.evaluateJavascript(readyJs, null);
+            WebView wv = getOrCreateWebView(getApplicationContext(), key);
+            wv.onResume(); wv.resumeTimers();
+            if (wasNew) mainHandler.postDelayed(() -> wv.evaluateJavascript(readyJs, null), 2600);
+            else wv.evaluateJavascript(readyJs, null);
         });
-        try { latch.await(timeoutSec, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+        try { latch.await(timeoutSec + (wasNew ? 3 : 0), TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
         latches.remove(reqId);
+        scheduleSleep();
         String res = results.remove(reqId);
         return (res != null && !res.isEmpty()) ? res : "{\"ok\":false,\"err\":\"Timeout JS\"}";
     }
@@ -231,78 +296,6 @@ public class BridgeService extends Service {
             String hdr = "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: " + data.length + "\r\nConnection: close\r\n\r\n";
             out.write(hdr.getBytes(StandardCharsets.UTF_8)); out.write(data); out.flush();
         } finally { c.disconnect(); }
-    }
-
-    private String fetchGoogleNewsRssFallback() {
-        try {
-            HttpURLConnection c = (HttpURLConnection) new URL("https://news.google.com/rss?hl=it&gl=IT&ceid=IT:it").openConnection();
-            c.setConnectTimeout(7000); c.setReadTimeout(9000);
-            c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            try (InputStream is = c.getInputStream()) {
-                byte[] buf = new byte[8192]; int n;
-                while ((n = is.read(buf)) != -1) out.write(buf, 0, n);
-            }
-            String xml = new String(out.toByteArray(), StandardCharsets.UTF_8);
-            int first = xml.indexOf('<');
-            if (first > 0) xml = xml.substring(first);
-            XmlPullParser xpp = XmlPullParserFactory.newInstance().newPullParser();
-            xpp.setInput(new StringReader(xml));
-            JSONArray items = new JSONArray();
-            String title = "", link = "";
-            boolean inItem = false;
-            int ev = xpp.getEventType();
-            while (ev != XmlPullParser.END_DOCUMENT && items.length() < 20) {
-                String tag = xpp.getName() != null ? xpp.getName().toLowerCase() : "";
-                if (ev == XmlPullParser.START_TAG) {
-                    if ("item".equals(tag)) { inItem = true; title = ""; link = ""; }
-                    else if (inItem && "title".equals(tag)) title = Html.fromHtml(xpp.nextText(), Html.FROM_HTML_MODE_LEGACY).toString();
-                    else if (inItem && "link".equals(tag)) link = xpp.nextText().trim();
-                } else if (ev == XmlPullParser.END_TAG && "item".equals(tag) && inItem) {
-                    inItem = false;
-                    if (!title.isEmpty()) items.put(new JSONObject().put("title", title).put("url", link).put("img", "").put("src", "Google News"));
-                }
-                ev = xpp.next();
-            }
-            return new JSONObject().put("ok", true).put("items", items).toString();
-        } catch (Exception e) { return "{\"ok\":true,\"items\":[]}"; }
-    }
-
-    private String fetchArticleJson(String rawUrl) {
-        try {
-            String cur = rawUrl, html = "";
-            for (int i = 0; i < 6; i++) {
-                HttpURLConnection c = (HttpURLConnection) new URL(cur).openConnection();
-                c.setInstanceFollowRedirects(false);
-                c.setConnectTimeout(8000); c.setReadTimeout(10000);
-                c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
-                c.setRequestProperty("Cookie", "CONSENT=YES+cb.20260101-00-p0.it+FX+111");
-                int code = c.getResponseCode();
-                if (code >= 300 && code < 400) {
-                    String loc = c.getHeaderField("Location"); c.disconnect();
-                    if (loc == null) break;
-                    cur = new URL(new URL(cur), loc).toString(); continue;
-                }
-                try (InputStream is = c.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-                    byte[] buf = new byte[8192]; int n;
-                    while ((n = is.read(buf)) != -1) out.write(buf, 0, n);
-                    html = new String(out.toByteArray(), StandardCharsets.UTF_8);
-                } finally { c.disconnect(); }
-                break;
-            }
-            String cleaned = html.replaceAll("(?is)<script.*?</script>", " ").replaceAll("(?is)<style.*?</style>", " ")
-                    .replaceAll("(?is)<nav.*?</nav>", " ").replaceAll("(?is)<footer.*?</footer>", " ");
-            Matcher m = Pattern.compile("(?is)<p\\b[^>]*>(.*?)</p>").matcher(cleaned);
-            StringBuilder sb = new StringBuilder();
-            while (m.find() && sb.length() < 4500) {
-                String p = Html.fromHtml(m.group(1).replaceAll("(?is)<[^>]+>", " "), Html.FROM_HTML_MODE_LEGACY)
-                        .toString().replaceAll("\\s+", " ").trim();
-                if (p.length() >= 35) sb.append(p).append("\n\n");
-            }
-            String txt = sb.toString().trim();
-            if (txt.isEmpty()) txt = "Anteprima non estraibile (articolo protetto).";
-            return new JSONObject().put("ok", true).put("text", txt).toString();
-        } catch (Exception e) { return "{\"ok\":false,\"text\":\"Errore apertura articolo: " + e.getMessage() + "\"}"; }
     }
 
     private String getPhoneClipboard() {
@@ -332,8 +325,7 @@ public class BridgeService extends Service {
     }
 
     private String readLine(InputStream in) throws Exception {
-        ByteArrayOutputStream buf = new ByteArrayOutputStream();
-        int b;
+        ByteArrayOutputStream buf = new ByteArrayOutputStream(); int b;
         while ((b = in.read()) != -1) { if (b == '\n') break; if (b != '\r') buf.write(b); }
         return (b == -1 && buf.size() == 0) ? null : new String(buf.toByteArray(), StandardCharsets.UTF_8);
     }
@@ -355,38 +347,32 @@ public class BridgeService extends Service {
             byte[] buf = new byte[8192]; int n;
             while ((n = is.read(buf)) != -1) raw.write(buf, 0, n);
             byte[] bytes = raw.toByteArray();
-            BitmapFactory.Options o = new BitmapFactory.Options();
-            o.inJustDecodeBounds = true;
+            BitmapFactory.Options o = new BitmapFactory.Options(); o.inJustDecodeBounds = true;
             BitmapFactory.decodeByteArray(bytes, 0, bytes.length, o);
-            int sample = 1;
-            while (o.outWidth / sample > 420) sample *= 2;
+            int sample = 1; while (o.outWidth / sample > 420) sample *= 2;
             o.inJustDecodeBounds = false; o.inSampleSize = sample;
             Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, o);
             ByteArrayOutputStream jpg = new ByteArrayOutputStream();
             bmp.compress(Bitmap.CompressFormat.JPEG, 72, jpg);
             byte[] outBytes = jpg.toByteArray();
             String hdr = "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: " + outBytes.length + "\r\nConnection: close\r\n\r\n";
-            out.write(hdr.getBytes(StandardCharsets.UTF_8));
-            out.write(outBytes); out.flush();
+            out.write(hdr.getBytes(StandardCharsets.UTF_8)); out.write(outBytes); out.flush();
         } finally { c.disconnect(); }
     }
 
     private void sendJson(OutputStream out, int code, String json) throws Exception {
         byte[] b = json.getBytes(StandardCharsets.UTF_8);
         String hdr = "HTTP/1.1 " + code + " OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: " + b.length + "\r\nConnection: close\r\n\r\n";
-        out.write(hdr.getBytes(StandardCharsets.UTF_8));
-        out.write(b); out.flush();
+        out.write(hdr.getBytes(StandardCharsets.UTF_8)); out.write(b); out.flush();
     }
 
     private Map<String, String> parseQuery(String full) {
-        Map<String, String> map = new HashMap<>();
-        int q = full.indexOf('?');
+        Map<String, String> map = new HashMap<>(); int q = full.indexOf('?');
         if (q < 0) return map;
         for (String pair : full.substring(q + 1).split("&")) {
             int eq = pair.indexOf('=');
             if (eq > 0) {
-                try { map.put(URLDecoder.decode(pair.substring(0, eq), "UTF-8"), URLDecoder.decode(pair.substring(eq + 1), "UTF-8")); }
-                catch (Exception ignored) {}
+                try { map.put(URLDecoder.decode(pair.substring(0, eq), "UTF-8"), URLDecoder.decode(pair.substring(eq + 1), "UTF-8")); } catch (Exception ignored) {}
             }
         }
         return map;

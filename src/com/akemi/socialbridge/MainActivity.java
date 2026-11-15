@@ -1,6 +1,5 @@
 package com.akemi.socialbridge;
 
-import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -13,10 +12,7 @@ import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.ViewGroup;
-import android.webkit.CookieManager;
-import android.webkit.WebSettings;
 import android.webkit.WebView;
-import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -34,7 +30,8 @@ public class MainActivity extends Activity {
     public static final String MOBILE_UA = "Mozilla/5.0 (Linux; Android 14; SM-F731B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
     private static final int PICK_FILE = 42;
 
-    private WebView igWeb, redditWeb, newsWeb, geminiWeb, activeWeb;
+    private FrameLayout webSlot;
+    private String activeKey = "ig";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -92,82 +89,57 @@ public class MainActivity extends Activity {
         LinearLayout bar2 = new LinearLayout(this);
         bar2.setOrientation(LinearLayout.HORIZONTAL);
         bar2.setGravity(Gravity.CENTER_VERTICAL);
-        bar2.setPadding(8, 4, 8, 8);
+        bar2.setPadding(6, 4, 6, 8);
         bar2.setBackgroundColor(Color.parseColor("#111827"));
 
-        final Button btnIg = new Button(this); btnIg.setText("Insta"); btnIg.setTextSize(10.5f);
-        btnIg.setBackgroundColor(Color.parseColor("#DB2777")); btnIg.setTextColor(Color.WHITE);
-
-        final Button btnRd = new Button(this); btnRd.setText("Reddit"); btnRd.setTextSize(10.5f);
-        btnRd.setBackgroundColor(Color.parseColor("#1E293B")); btnRd.setTextColor(Color.WHITE);
-
-        final Button btnNw = new Button(this); btnNw.setText("News"); btnNw.setTextSize(10.5f);
-        btnNw.setBackgroundColor(Color.parseColor("#1E293B")); btnNw.setTextColor(Color.WHITE);
-
-        final Button btnGm = new Button(this); btnGm.setText("Gemini"); btnGm.setTextSize(10.5f);
-        btnGm.setBackgroundColor(Color.parseColor("#1E293B")); btnGm.setTextColor(Color.WHITE);
-
-        bar2.addView(btnIg); bar2.addView(btnRd); bar2.addView(btnNw); bar2.addView(btnGm);
+        String[][] tabs = {{"IG", "ig", "#DB2777"}, {"FB", "fb", "#1D4ED8"}, {"Reddit", "reddit", "#EA580C"}, {"News", "news", "#0284C7"}, {"Gemini", "gemini", "#7C3AED"}};
+        final Button[] btns = new Button[tabs.length];
+        for (int i = 0; i < tabs.length; i++) {
+            final int idx = i;
+            final String key = tabs[i][1], color = tabs[i][2];
+            Button b = new Button(this);
+            b.setText(tabs[i][0]); b.setTextSize(10.5f);
+            b.setPadding(8, 6, 8, 6); b.setMinimumWidth(0); b.setMinWidth(0);
+            b.setTextColor(Color.WHITE);
+            b.setBackgroundColor(Color.parseColor(i == 0 ? color : "#1E293B"));
+            b.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            b.setOnClickListener(v -> {
+                for (Button x : btns) x.setBackgroundColor(Color.parseColor("#1E293B"));
+                btns[idx].setBackgroundColor(Color.parseColor(color));
+                switchTab(key);
+            });
+            btns[i] = b;
+            bar2.addView(b);
+        }
         root.addView(bar2);
 
-        FrameLayout stack = new FrameLayout(this);
-        geminiWeb = buildWebView("https://gemini.google.com/app");
-        newsWeb = buildWebView("https://news.google.com/?hl=it&gl=IT&ceid=IT:it");
-        redditWeb = buildWebView("https://www.reddit.com/");
-        igWeb = buildWebView("https://www.instagram.com/");
-        activeWeb = igWeb;
-
-        BridgeService.igWeb = igWeb;
-        BridgeService.redditWeb = redditWeb;
-        BridgeService.newsWeb = newsWeb;
-        BridgeService.geminiWeb = geminiWeb;
-
-        FrameLayout.LayoutParams fp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        stack.addView(geminiWeb, fp); stack.addView(newsWeb, fp); stack.addView(redditWeb, fp); stack.addView(igWeb, fp);
-        root.addView(stack, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-
-        btnIg.setOnClickListener(v -> {
-            activeWeb = igWeb; igWeb.bringToFront();
-            btnIg.setBackgroundColor(Color.parseColor("#DB2777"));
-            btnRd.setBackgroundColor(Color.parseColor("#1E293B"));
-            btnNw.setBackgroundColor(Color.parseColor("#1E293B"));
-            btnGm.setBackgroundColor(Color.parseColor("#1E293B"));
-        });
-        btnRd.setOnClickListener(v -> {
-            activeWeb = redditWeb; redditWeb.bringToFront();
-            btnRd.setBackgroundColor(Color.parseColor("#EA580C"));
-            btnIg.setBackgroundColor(Color.parseColor("#1E293B"));
-            btnNw.setBackgroundColor(Color.parseColor("#1E293B"));
-            btnGm.setBackgroundColor(Color.parseColor("#1E293B"));
-        });
-        btnNw.setOnClickListener(v -> {
-            activeWeb = newsWeb; newsWeb.bringToFront();
-            btnNw.setBackgroundColor(Color.parseColor("#0284C7"));
-            btnIg.setBackgroundColor(Color.parseColor("#1E293B"));
-            btnRd.setBackgroundColor(Color.parseColor("#1E293B"));
-            btnGm.setBackgroundColor(Color.parseColor("#1E293B"));
-        });
-        btnGm.setOnClickListener(v -> {
-            activeWeb = geminiWeb; geminiWeb.bringToFront();
-            btnGm.setBackgroundColor(Color.parseColor("#7C3AED"));
-            btnIg.setBackgroundColor(Color.parseColor("#1E293B"));
-            btnRd.setBackgroundColor(Color.parseColor("#1E293B"));
-            btnNw.setBackgroundColor(Color.parseColor("#1E293B"));
-        });
-
+        webSlot = new FrameLayout(this);
+        root.addView(webSlot, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         setContentView(root);
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        BridgeService.uiVisible = true;
+        switchTab(activeKey);
+    }
+
+    @Override
     protected void onPause() {
+        BridgeService.uiVisible = false;
+        webSlot.removeAllViews();
+        BridgeService.detachAllFromUi(getApplicationContext());
         super.onPause();
-        try {
-            if (igWeb != null) { igWeb.onResume(); igWeb.resumeTimers(); }
-            if (redditWeb != null) { redditWeb.onResume(); redditWeb.resumeTimers(); }
-            if (newsWeb != null) { newsWeb.onResume(); newsWeb.resumeTimers(); }
-            if (geminiWeb != null) { geminiWeb.onResume(); geminiWeb.resumeTimers(); }
-        } catch (Exception ignored) {}
+    }
+
+    private void switchTab(String key) {
+        activeKey = key;
+        webSlot.removeAllViews();
+        WebView wv = BridgeService.getOrCreateWebView(this, key);
+        if (wv.getParent() instanceof ViewGroup) ((ViewGroup) wv.getParent()).removeView(wv);
+        wv.onResume(); wv.resumeTimers();
+        webSlot.addView(wv, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
     private String getLocalIp() {
@@ -191,16 +163,13 @@ public class MainActivity extends Activity {
         super.onActivityResult(reqCode, resCode, data);
         if (reqCode == PICK_FILE && resCode == RESULT_OK && data != null && data.getData() != null) {
             Uri uri = data.getData();
-            try (InputStream is = getContentResolver().openInputStream(uri);
-                 ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            try (InputStream is = getContentResolver().openInputStream(uri); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
                 byte[] buf = new byte[8192]; int n;
                 while ((n = is.read(buf)) != -1) out.write(buf, 0, n);
                 NotifService.sharedFileBytes = out.toByteArray();
                 NotifService.sharedFileName = queryName(uri);
                 Toast.makeText(this, "Pronto per Watch: " + NotifService.sharedFileName, Toast.LENGTH_LONG).show();
-            } catch (Exception e) {
-                Toast.makeText(this, "Errore file: " + e.getMessage(), Toast.LENGTH_SHORT).show();
-            }
+            } catch (Exception e) { Toast.makeText(this, "Errore file: " + e.getMessage(), Toast.LENGTH_SHORT).show(); }
         }
     }
 
@@ -214,25 +183,10 @@ public class MainActivity extends Activity {
         return "allegato_telefono.bin";
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
-    private WebView buildWebView(String startUrl) {
-        WebView wv = new WebView(this);
-        wv.setBackgroundColor(Color.parseColor("#0B1120"));
-        WebSettings s = wv.getSettings();
-        s.setJavaScriptEnabled(true);
-        s.setDomStorageEnabled(true);
-        s.setUserAgentString(MOBILE_UA);
-        CookieManager.getInstance().setAcceptCookie(true);
-        CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true);
-        wv.addJavascriptInterface(new BridgeService.JsCallback(), "AndroidBridge");
-        wv.setWebViewClient(new WebViewClient());
-        wv.loadUrl(startUrl);
-        return wv;
-    }
-
     @Override
     public void onBackPressed() {
-        if (activeWeb != null && activeWeb.canGoBack()) activeWeb.goBack();
+        WebView wv = BridgeService.getOrCreateWebView(this, activeKey);
+        if (wv.canGoBack()) wv.goBack();
         else moveTaskToBack(true);
     }
 }
