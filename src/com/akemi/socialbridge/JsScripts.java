@@ -16,8 +16,14 @@ public class JsScripts {
             + "if(cm.image_versions2&&cm.image_versions2.candidates&&cm.image_versions2.candidates.length)imgs.push(cm.image_versions2.candidates[0].url);"
             + "if(!vid&&cm.video_versions&&cm.video_versions.length)vid=cm.video_versions[cm.video_versions.length-1].url;});}"
             + "else if(m.image_versions2&&m.image_versions2.candidates&&m.image_versions2.candidates.length)imgs.push(m.image_versions2.candidates[0].url);"
+            + "else if(m.display_url)imgs.push(m.display_url);"
             + "if(!vid&&m.video_versions&&m.video_versions.length)vid=m.video_versions[m.video_versions.length-1].url;"
-            + "return {id:String(m.pk||m.id||''),user:m.user.username||'',text:(m.caption&&m.caption.text)||'',likes:m.like_count||0,comments:m.comment_count||0,img:imgs[0]||'',imgs:imgs,vid:vid};};";
+            + "if(!imgs.length&&!vid)return null;"
+            + "return {id:String(m.pk||m.id||''),user:m.user.username||'',text:(m.caption&&m.caption.text)||'',likes:m.like_count||0,comments:m.comment_count||0,img:imgs[0]||'',imgs:imgs,vid:vid};};"
+            + "const walkM=(obj,out,seen)=>{if(!obj||typeof obj!=='object'||out.length>=24)return;"
+            + "if((obj.pk||obj.id)&&obj.user&&(obj.image_versions2||obj.carousel_media||obj.video_versions||obj.display_url)){"
+            + "const it=mapM(obj);if(it&&!seen.has(it.id)){seen.add(it.id);out.push(it);}return;}"
+            + "Object.values(obj).forEach(v=>{if(Array.isArray(v))v.forEach(x=>walkM(x,out,seen));else if(v&&typeof v==='object')walkM(v,out,seen);});};";
     }
 
     public static String igFeed(String maxId) {
@@ -26,43 +32,53 @@ public class JsScripts {
                 : "'reason=pagination&max_id='+encodeURIComponent(" + JSONObject.quote(maxId) + ")";
         return "(async function(){let res={ok:true,items:[],next:''};try{" + igHdrs(true) + mapIgMediaFn()
             + "const r=await fetch('/api/v1/feed/timeline/',{method:'POST',credentials:'include',headers:h,body:" + body + "});"
-            + "if(r.ok){const j=await r.json();res.next=String(j.next_max_id||'');"
-            + "(j.feed_items||[]).forEach(x=>{const it=mapM(x.media_or_ad);if(it)res.items.push(it);});}"
+            + "if(r.ok){const j=await r.json();res.next=String(j.next_max_id||'');walkM(j.feed_items||j,res.items,new Set());}"
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
     }
 
     public static String igExplore() {
         return "(async function(){let res={ok:true,items:[]};try{" + igHdrs(false) + mapIgMediaFn()
-            + "const r=await fetch('/api/v1/discover/web/explore_grid/?include_fixed_destinations=false',{credentials:'include',headers:h});"
-            + "const j=await r.json();(j.sectional_items||[]).forEach(s=>{"
-            + "const lay=s.layout_content||{};(lay.medias||[]).forEach(w=>{const it=mapM(w.media);if(it)res.items.push(it);});});"
+            + "const r=await fetch('/api/v1/discover/web/explore_grid/?include_fixed_destinations=true&is_nonpersonalized_explore=false',{credentials:'include',headers:h});"
+            + "if(r.ok){const j=await r.json();walkM(j,res.items,new Set());}"
+            + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
+    }
+
+    public static String igTagFeed(String tag) {
+        return "(async function(){let res={ok:true,items:[]};try{" + igHdrs(false) + mapIgMediaFn()
+            + "const r=await fetch('/api/v1/tags/web_info/?tag_name='+encodeURIComponent(" + JSONObject.quote(tag) + "),{credentials:'include',headers:h});"
+            + "if(r.ok){const j=await r.json();walkM(j,res.items,new Set());}"
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
     }
 
     public static String igSaved() {
         return "(async function(){let res={ok:true,items:[]};try{" + igHdrs(false) + mapIgMediaFn()
             + "const r=await fetch('/api/v1/feed/saved/posts/',{credentials:'include',headers:h});"
-            + "const j=await r.json();(j.items||[]).forEach(w=>{const it=mapM(w.media);if(it)res.items.push(it);});"
+            + "if(r.ok){const j=await r.json();walkM(j,res.items,new Set());}"
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
     }
 
     public static String igStories() {
-        return "(async function(){let res={ok:true,stories:[]};try{" + igHdrs(false)
+        return "(async function(){let res={ok:true,stories:[]};window.__igTray=window.__igTray||{};try{" + igHdrs(false)
             + "const r=await fetch('/api/v1/feed/reels_tray/',{credentials:'include',headers:h});"
             + "const j=await r.json();(j.tray||[]).slice(0,22).forEach(t=>{"
             + "const pk=String((t.user&&t.user.pk)||t.id||'');const u=(t.user&&t.user.username)||'';"
+            + "if(t.items&&t.items.length)window.__igTray[pk]=t.items;"
             + "if(pk&&u)res.stories.push({id:pk,user:u,avatar:(t.user&&t.user.profile_pic_url)||''});});"
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
     }
 
     public static String igStoryMedia(String reelId) {
         return "(async function(){let res={ok:true,items:[]};try{" + igHdrs(false)
-            + "const rid=String(" + JSONObject.quote(reelId) + ");"
-            + "const r=await fetch('/api/v1/feed/reels_media/?reel_ids='+encodeURIComponent(rid),{credentials:'include',headers:h});"
-            + "const j=await r.json();let reel=(j.reels_media&&j.reels_media[0])||(j.reels&&j.reels[rid]);"
-            + "if(!reel&&j.reels){const ks=Object.keys(j.reels);if(ks.length)reel=j.reels[ks[0]];}"
-            + "((reel&&reel.items)||[]).forEach(m=>{res.items.push({"
-            + "img:(m.image_versions2&&m.image_versions2.candidates&&m.image_versions2.candidates[0].url)||'',"
+            + "const rid=String(" + JSONObject.quote(reelId) + ").replace(/^user:/,'');"
+            + "let raw=(window.__igTray&&window.__igTray[rid])||[];"
+            + "if(!raw.length){try{const r1=await fetch('/api/v1/feed/user/'+encodeURIComponent(rid)+'/story/',{credentials:'include',headers:h});"
+            + "if(r1.ok){const j1=await r1.json();if(j1.reel&&j1.reel.items)raw=j1.reel.items;}}catch(e){}}"
+            + "if(!raw.length){try{const r2=await fetch('/api/v1/feed/reels_media/?reel_ids='+encodeURIComponent(rid),{credentials:'include',headers:h});"
+            + "if(r2.ok){const j2=await r2.json();let rl=(j2.reels_media&&j2.reels_media[0])||(j2.reels&&j2.reels[rid]);"
+            + "if(!rl&&j2.reels){const ks=Object.keys(j2.reels);if(ks.length)rl=j2.reels[ks[0]];}"
+            + "if(rl&&rl.items)raw=rl.items;}}catch(e){}}"
+            + "raw.forEach(m=>{res.items.push({"
+            + "img:(m.image_versions2&&m.image_versions2.candidates&&m.image_versions2.candidates[0].url)||m.display_url||'',"
             + "vid:(m.video_versions&&m.video_versions.length&&m.video_versions[m.video_versions.length-1].url)||''});});"
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
     }
@@ -77,8 +93,11 @@ public class JsScripts {
             + "res.posts_count=(usr.edge_owner_to_timeline_media&&usr.edge_owner_to_timeline_media.count)||0;"
             + "res.followers=(usr.edge_followed_by&&usr.edge_followed_by.count)||0;"
             + "res.following=(usr.edge_follow&&usr.edge_follow.count)||0;res.followed=!!usr.followed_by_viewer;"
-            + "const r2=await fetch('/api/v1/feed/user/'+encodeURIComponent(res.id)+'/?count=18',{credentials:'include',headers:h});"
-            + "if(r2.ok){const j2=await r2.json();(j2.items||[]).forEach(m=>{const it=mapM(m);if(it)res.items.push(it);});}}"
+            + "try{const r2=await fetch('/api/v1/feed/user/'+encodeURIComponent(res.id)+'/?count=18',{credentials:'include',headers:h});"
+            + "if(r2.ok){const j2=await r2.json();walkM(j2,res.items,new Set());}}catch(e){}"
+            + "if(!res.items.length){((usr.edge_owner_to_timeline_media&&usr.edge_owner_to_timeline_media.edges)||[]).forEach(e=>{"
+            + "const n=e.node||{};const cap=((n.edge_media_to_caption&&n.edge_media_to_caption.edges&&n.edge_media_to_caption.edges[0])||{node:{}}).node.text||'';"
+            + "res.items.push({id:String(n.id||''),user:res.user,text:cap,likes:(n.edge_liked_by&&n.edge_liked_by.count)||0,comments:(n.edge_media_to_comment&&n.edge_media_to_comment.count)||0,img:n.display_url||'',imgs:[n.display_url||''],vid:n.video_url||''});});}}"
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
     }
 
@@ -89,10 +108,14 @@ public class JsScripts {
     }
 
     public static String igSearch(String q) {
-        return "(async function(){let res={ok:true,users:[],tags:[]};try{" + igHdrs(false)
-            + "const r=await fetch('/api/v1/web/search/topsearch/?context=blended&query='+encodeURIComponent(" + JSONObject.quote(q) + "),{credentials:'include',headers:h});"
-            + "const j=await r.json();(j.users||[]).slice(0,15).forEach(w=>{const u=w.user||{};res.users.push({user:u.username||'',name:u.full_name||''});});"
-            + "(j.hashtags||[]).slice(0,8).forEach(w=>{const t=w.hashtag||{};res.tags.push({name:t.name||'',count:t.media_count||0});});"
+        return "(async function(){let res={ok:true,users:[],tags:[]};const seenU=new Set(),seenT=new Set();try{" + igHdrs(false)
+            + "const qu=encodeURIComponent(" + JSONObject.quote(q) + ");"
+            + "const addU=u=>{if(u&&u.username&&!seenU.has(u.username)){seenU.add(u.username);res.users.push({user:u.username,name:u.full_name||''});}};"
+            + "const addT=t=>{if(t&&t.name&&!seenT.has(t.name)){seenT.add(t.name);res.tags.push({name:t.name,count:t.media_count||0});}};"
+            + "const urls=['/api/v1/fbsearch/web/top_serp/?enable_metadata=true&query='+qu,'/api/v1/web/search/topsearch/?context=blended&query='+qu,'/api/v1/users/search/?q='+qu];"
+            + "for(const u of urls){if(res.users.length>=10)break;try{const r=await fetch(u,{credentials:'include',headers:h});if(r.ok){const j=await r.json();"
+            + "(j.users||[]).forEach(w=>addU(w.user||w));(j.hashtags||[]).forEach(w=>addT(w.hashtag||w));"
+            + "(j.list||[]).forEach(w=>{if(w.user)addU(w.user);if(w.hashtag)addT(w.hashtag);});}}catch(e){}}"
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
     }
 
@@ -141,6 +164,76 @@ public class JsScripts {
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:ok}));})();";
     }
 
+    public static String redditFeed(String sub, String sort, String after) {
+        String s = sub == null ? "" : sub.trim();
+        String base = s.isEmpty() ? "/.json?limit=20&raw_json=1"
+                : ("day".equals(sort) || "week".equals(sort) || "month".equals(sort))
+                ? "/r/" + s + "/top.json?t=" + sort + "&limit=20&raw_json=1"
+                : "new".equals(sort) ? "/r/" + s + "/new.json?limit=20&raw_json=1"
+                : "/r/" + s + "/hot.json?limit=20&raw_json=1";
+        String path = (after != null && !after.isEmpty()) ? base + "&after=" + after : base;
+        return "(async function(){try{"
+            + "const r=await fetch(" + JSONObject.quote(path) + ",{credentials:'include',headers:{'Accept':'application/json'}});"
+            + "const j=await r.json();if(j&&j.data){AndroidBridge.done('__REQ_ID__',JSON.stringify(j));return;}"
+            + "}catch(e){}AndroidBridge.done('__REQ_ID__','{\"data\":{\"children\":[]}}');})();";
+    }
+
+    public static String redditComments(String permalink) {
+        String clean = permalink.replaceAll("^https?://[^/]+", "").split("\\?")[0];
+        if (!clean.startsWith("/")) clean = "/" + clean;
+        if (clean.endsWith("/")) clean = clean.substring(0, clean.length() - 1);
+        String url = clean + ".json?limit=35&depth=4&raw_json=1";
+        return "(async function(){try{"
+            + "const r=await fetch(" + JSONObject.quote(url) + ",{credentials:'include',headers:{'Accept':'application/json'}});"
+            + "const j=await r.json();if(Array.isArray(j)){AndroidBridge.done('__REQ_ID__',JSON.stringify(j));return;}"
+            + "}catch(e){}AndroidBridge.done('__REQ_ID__','[]');})();";
+    }
+
+    public static String redditUser(String username) {
+        return "(async function(){let res={ok:false,items:[]};try{"
+            + "const u=encodeURIComponent(" + JSONObject.quote(username) + ");"
+            + "const j1=await (await fetch('/user/'+u+'/about.json',{credentials:'include'})).json();const d=j1.data||{};"
+            + "res.ok=true;res.user=d.name||" + JSONObject.quote(username) + ";res.karma=(d.total_karma||(d.link_karma||0)+(d.comment_karma||0));"
+            + "res.bio=(d.subreddit&&d.subreddit.public_description)||'';"
+            + "const j2=await (await fetch('/user/'+u+'/submitted.json?limit=20&raw_json=1',{credentials:'include'})).json();"
+            + "res.items=(j2.data&&j2.data.children)||[];"
+            + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
+    }
+
+    public static String redditSubInfo(String sub) {
+        return "(async function(){let res={ok:false};try{"
+            + "const j=await (await fetch('/r/'+encodeURIComponent(" + JSONObject.quote(sub) + ")+'/about.json',{credentials:'include'})).json();"
+            + "const d=j.data||{};res={ok:true,sub:d.display_name||" + JSONObject.quote(sub) + ",desc:d.public_description||'',subs:d.subscribers||0,subscribed:!!d.user_is_subscriber};"
+            + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
+    }
+
+    public static String redditSearch(String q) {
+        return "(async function(){let res={ok:true,subs:[],posts:[]};try{"
+            + "const qu=encodeURIComponent(" + JSONObject.quote(q) + ");"
+            + "const j1=await (await fetch('/subreddits/search.json?q='+qu+'&limit=8',{credentials:'include'})).json();"
+            + "res.subs=((j1.data&&j1.data.children)||[]).map(c=>({sub:c.data.display_name,subs:c.data.subscribers||0}));"
+            + "const j2=await (await fetch('/search.json?q='+qu+'&limit=18&raw_json=1',{credentials:'include'})).json();"
+            + "res.posts=(j2.data&&j2.data.children)||[];"
+            + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
+    }
+
+    public static String redditSaved() {
+        return "(async function(){try{"
+            + "const me=await (await fetch('/api/me.json',{credentials:'include'})).json();"
+            + "const u=me.data&&me.data.name;if(!u){AndroidBridge.done('__REQ_ID__','{\"data\":{\"children\":[]}}');return;}"
+            + "const j=await (await fetch('/user/'+encodeURIComponent(u)+'/saved.json?limit=25&raw_json=1',{credentials:'include'})).json();"
+            + "AndroidBridge.done('__REQ_ID__',JSON.stringify(j));"
+            + "}catch(e){AndroidBridge.done('__REQ_ID__','{\"data\":{\"children\":[]}}');}})();";
+    }
+
+    public static String redditAction(String endpoint, String bodyParams) {
+        return "(async function(){let ok=false;try{"
+            + "const me=await (await fetch('/api/me.json',{credentials:'include'})).json();"
+            + "const uh=(me.data&&me.data.modhash)||'';"
+            + "const r=await fetch(" + JSONObject.quote(endpoint) + ",{method:'POST',credentials:'include',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Modhash':uh},body:" + JSONObject.quote(bodyParams) + "+'&uh='+encodeURIComponent(uh)});"
+            + "ok=r.ok;}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:ok}));})();";
+    }
+
     public static String fbFeed(boolean scrollMore) {
         return "(function(){const run=()=>{"
             + "const out=[],seen=new Set();"
@@ -155,8 +248,7 @@ public class JsScripts {
             + "const cLink=el.querySelector('a[href*=\"story.php\"],a[href*=\"/posts/\"],a[href*=\"/permalink/\"],a[href*=\"comment\"]');"
             + "const imgs=[...el.querySelectorAll('img[src*=\"fbcdn\"],img[src*=\"scontent\"]')].filter(im=>im.width>110||im.naturalWidth>110);"
             + "const vid=(el.querySelector('video')||{}).src||'';"
-            + "out.push({idx:idx,author:author.slice(0,45),text:body,img:imgs.length?imgs[0].src:'',vid:vid,"
-            + "purl:pLink?pLink.href:'',curl:cLink?cLink.href:''});});"
+            + "out.push({idx:idx,author:author.slice(0,45),text:body,img:imgs.length?imgs[0].src:'',vid:vid,purl:pLink?pLink.href:'',curl:cLink?cLink.href:''});});"
             + "AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,items:out.slice(0,22)}));};"
             + (scrollMore ? "window.scrollBy(0,2200);setTimeout(run,1400);" : "run();") + "})();";
     }
@@ -169,27 +261,21 @@ public class JsScripts {
     }
 
     public static String fbReadPage() {
-        return "(function(){try{"
-            + "const h=document.querySelector('h1,h2,h3,[role=\"heading\"]');"
-            + "const title=h?(h.innerText||'').trim():'Pagina Facebook';"
-            + "const items=[],seen=new Set();"
+        return "(function(){try{const items=[],seen=new Set();"
             + "document.querySelectorAll('article,[data-tracking-duration-id],div[role=\"article\"],div[data-ft]').forEach(el=>{"
             + "const txt=(el.innerText||'').trim().replace(/\\s+/g,' ');"
             + "if(txt.length>15&&!seen.has(txt.slice(0,45))){seen.add(txt.slice(0,45));"
             + "const im=(el.querySelector('img[src*=\"fbcdn\"],img[src*=\"scontent\"]')||{}).src||'';"
             + "items.push({text:txt.slice(0,320),img:im});}});"
-            + "AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,title:title,items:items.slice(0,20)}));"
-            + "}catch(e){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,title:'',items:[]}));}})();";
+            + "AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,items:items.slice(0,20)}));"
+            + "}catch(e){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,items:[]}));}})();";
     }
 
     public static String fbPostComment(String text) {
-        return "(function(){try{"
-            + "const box=document.querySelector('textarea,input[name=\"comment_text\"],[contenteditable=\"true\"]');"
-            + "if(box){box.focus();if('value' in box)box.value=" + JSONObject.quote(text) + ";else box.textContent=" + JSONObject.quote(text) + ";"
-            + "box.dispatchEvent(new Event('input',{bubbles:true}));}"
+        return "(function(){try{const box=document.querySelector('textarea,input[name=\"comment_text\"],[contenteditable=\"true\"]');"
+            + "if(box){box.focus();if('value' in box)box.value=" + JSONObject.quote(text) + ";else box.textContent=" + JSONObject.quote(text) + ";box.dispatchEvent(new Event('input',{bubbles:true}));}"
             + "setTimeout(()=>{const btn=[...document.querySelectorAll('button,input[type=\"submit\"],[role=\"button\"]')].find(b=>/pubblica|invia|commenta|post|send/i.test((b.innerText||b.value||'')));if(btn)btn.click();"
-            + "AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true}));},350);"
-            + "}catch(e){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false}));}})();";
+            + "AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true}));},350);}catch(e){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false}));}})();";
     }
 
     public static String geminiStop() {
@@ -210,38 +296,53 @@ public class JsScripts {
     }
 
     public static String geminiReadThread() {
-        return "(function(){try{const turns=[],seen=new Set();document.querySelectorAll('user-query,model-response,.user-query-text,.model-response-text').forEach(el=>{const tag=el.tagName.toLowerCase(),cls=(el.className||'').toString();const role=(tag.includes('user')||cls.includes('user'))?'Tu':'Gemini';const txt=(el.innerText||'').trim(),key=role+':'+txt.slice(0,40);if(txt.length>0&&!seen.has(key)){seen.add(key);turns.push({role:role,text:txt});}});"
+        return "(function(){try{const turns=[],seen=new Set();document.querySelectorAll('user-query,model-response').forEach(el=>{const role=el.tagName.toLowerCase().includes('user')?'Tu':'Gemini';const txt=(el.innerText||'').trim(),key=role+':'+txt.slice(0,40);if(txt.length>0&&!seen.has(key)){seen.add(key);turns.push({role:role,text:txt});}});"
             + "AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,turns:turns.slice(-20)}));}catch(e){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,turns:[]}));}})();";
     }
 
     public static String geminiAsk(String prompt, String model, String think) {
         String prefix = "alto".equals(think) ? "[Ragionamento approfondito passo dopo passo]\n" : "basso".equals(think) ? "[Risposta breve e sintetica]\n" : "";
         String fullPrompt = prefix + prompt;
-        return "(function(){window.__gemAbort=false;try{const mTarget=(" + JSONObject.quote(model) + "||'').toLowerCase();"
-            + "if(mTarget&&mTarget!=='auto'){const sw=[...document.querySelectorAll('button')].find(b=>{const t=(b.innerText||'').toLowerCase();return b.getAttribute('data-test-id')==='bard-mode-menu-button'||t.includes('gemini')||t.includes('flash')||t.includes('hydrogen')||t.includes('carbon')||t.includes('pro');});if(sw)sw.click();setTimeout(()=>{const hit=[...document.querySelectorAll('[role=\"menuitem\"],[role=\"option\"],mat-option')].find(o=>(o.innerText||'').toLowerCase().includes(mTarget));if(hit)hit.click();},300);}"
+        return "(function(){window.__gemAbort=false;try{"
+            + "const getR=()=>{let l=[...document.querySelectorAll('model-response')];if(!l.length)l=[...document.querySelectorAll('.model-response-text,message-content')];return l;};"
+            + "const initR=getR();const prevCnt=initR.length;const prevLastTxt=prevCnt?(initR[prevCnt-1].innerText||'').trim():'';"
+            + "const mTarget=(" + JSONObject.quote(model) + "||'').toLowerCase();"
+            + "if(mTarget&&mTarget!=='auto'){const sw=[...document.querySelectorAll('button')].find(b=>{const t=(b.innerText||'').toLowerCase();return b.getAttribute('data-test-id')==='bard-mode-menu-button'||t.includes('gemini')||t.includes('flash')||t.includes('hydrogen')||t.includes('carbon')||t.includes('pro');});if(sw)sw.click();setTimeout(()=>{const hit=[...document.querySelectorAll('[role=\"menuitem\"],[role=\"option\"],mat-option')].find(o=>(o.innerText||'').toLowerCase().includes(mTarget));if(hit)hit.click();},250);}"
             + "setTimeout(()=>{if(window.__gemAbort){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:'Interrotto.'}));return;}"
-            + "const ed=document.querySelector('div.ql-editor,[contenteditable=\"true\"],textarea');if(!ed){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:'Apri Gemini su Z Flip'}));return;}"
-            + "ed.focus();ed.textContent='';document.execCommand('insertText',false," + JSONObject.quote(fullPrompt) + ");if(!ed.textContent)ed.textContent=" + JSONObject.quote(fullPrompt) + ";ed.dispatchEvent(new Event('input',{bubbles:true}));"
-            + "const prevCnt=document.querySelectorAll('model-response,.model-response-text,message-content').length;"
-            + "setTimeout(()=>{const btn=document.querySelector('button[aria-label*=\"Invia\"],button[aria-label*=\"Send\"],button.send-button');if(btn)btn.click();let last='',same=0,tries=0;"
+            + "const ed=document.querySelector('div.ql-editor,rich-textarea [contenteditable=\"true\"],[contenteditable=\"true\"],textarea');"
+            + "if(!ed){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:'Apri Gemini su Z Flip'}));return;}"
+            + "ed.focus();const fp=" + JSONObject.quote(fullPrompt) + ";"
+            + "if('value' in ed)ed.value=fp;else ed.innerHTML='<p>'+fp.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\\n/g,'<br>')+'</p>';"
+            + "ed.dispatchEvent(new Event('input',{bubbles:true}));"
+            + "setTimeout(()=>{const btn=document.querySelector('button[aria-label*=\"Invia\"],button[aria-label*=\"Send\"],button.send-button');if(btn)btn.click();"
+            + "let last='',same=0,tries=0;"
             + "const iv=setInterval(()=>{tries++;if(window.__gemAbort){clearInterval(iv);AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:'Interrotto.'}));return;}"
-            + "const nodes=document.querySelectorAll('model-response,.model-response-text,message-content');const cur=nodes.length>prevCnt?nodes[nodes.length-1].innerText.trim():(nodes.length?nodes[nodes.length-1].innerText.trim():'');"
-            + "if(cur&&cur===last)same++;else{last=cur;same=0;}if((same>=2&&cur.length>1)||tries>34){clearInterval(iv);AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,reply:cur||'Nessuna risposta.'}));}},750);},450);},500);"
+            + "const nodes=getR();let cur='';"
+            + "if(nodes.length>prevCnt)cur=(nodes[nodes.length-1].innerText||'').trim();"
+            + "else if(nodes.length>0){const cand=(nodes[nodes.length-1].innerText||'').trim();if(cand!==prevLastTxt)cur=cand;}"
+            + "const busy=!!document.querySelector('button[aria-label*=\"Interrompi\"],button[aria-label*=\"Stop\"],button[data-test-id=\"stop-button\"]');"
+            + "if(cur.length>1&&!busy&&cur===last)same++;else{last=cur;same=0;}"
+            + "if((same>=2&&cur.length>1)||tries>42){clearInterval(iv);AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,reply:cur||'Nessuna risposta.'}));}},700);},400);},450);"
             + "}catch(e){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:String(e)}));}})();";
     }
 
     public static String geminiEdit(String idxStr, String prompt, String model, String think) {
         String prefix = "alto".equals(think) ? "[Ragionamento approfondito passo dopo passo]\n" : "basso".equals(think) ? "[Risposta breve e sintetica]\n" : "";
         String fullPrompt = prefix + prompt;
-        return "(function(){window.__gemAbort=false;try{const idx=parseInt(" + JSONObject.quote(idxStr) + ",10)||0;const uqs=[...document.querySelectorAll('user-query')];const uq=uqs.length>idx?uqs[uqs.length-1-idx]:null;"
+        return "(function(){window.__gemAbort=false;try{"
+            + "const getR=()=>{let l=[...document.querySelectorAll('model-response')];if(!l.length)l=[...document.querySelectorAll('.model-response-text,message-content')];return l;};"
+            + "const initR=getR();const prevLastTxt=initR.length?(initR[initR.length-1].innerText||'').trim():'';"
+            + "const idx=parseInt(" + JSONObject.quote(idxStr) + ",10)||0;const uqs=[...document.querySelectorAll('user-query')];const uq=uqs.length>idx?uqs[uqs.length-1-idx]:null;"
             + "const editBtn=uq?uq.querySelector('button[aria-label*=\"Modifica\"],button[aria-label*=\"Edit\"]'):null;"
             + "if(!editBtn){" + geminiAsk(prompt, model, think).replaceFirst("^\\(function\\(\\)\\{", "") + ""
             + "editBtn.click();setTimeout(()=>{const box=uq.querySelector('textarea,div.ql-editor,[contenteditable=\"true\"]');if(!box){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:'Errore modifica'}));return;}"
             + "box.focus();if('value' in box)box.value=" + JSONObject.quote(fullPrompt) + ";else box.textContent=" + JSONObject.quote(fullPrompt) + ";box.dispatchEvent(new Event('input',{bubbles:true}));"
             + "setTimeout(()=>{const upd=uq.querySelector('button[aria-label*=\"Aggiorna\"],button[aria-label*=\"Update\"],button[aria-label*=\"Invia\"]')||[...uq.querySelectorAll('button')].pop();if(upd)upd.click();let last='',same=0,tries=0;"
             + "const iv=setInterval(()=>{tries++;if(window.__gemAbort){clearInterval(iv);AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:'Interrotto.'}));return;}"
-            + "const nodes=document.querySelectorAll('model-response,.model-response-text,message-content');const cur=nodes.length?nodes[nodes.length-1].innerText.trim():'';"
-            + "if(cur&&cur===last)same++;else{last=cur;same=0;}if((same>=2&&cur.length>1)||tries>34){clearInterval(iv);AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,reply:cur||'Nessuna risposta.'}));}},750);},300);},350);"
+            + "const nodes=getR();const cand=nodes.length?(nodes[nodes.length-1].innerText||'').trim():'';const cur=cand!==prevLastTxt?cand:'';"
+            + "const busy=!!document.querySelector('button[aria-label*=\"Interrompi\"],button[aria-label*=\"Stop\"]');"
+            + "if(cur.length>1&&!busy&&cur===last)same++;else{last=cur;same=0;}"
+            + "if((same>=2&&cur.length>1)||tries>42){clearInterval(iv);AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:true,reply:cur||cand||'Nessuna risposta.'}));}},700);},350);},350);"
             + "}catch(e){AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:false,reply:String(e)}));}})();";
     }
 }

@@ -50,8 +50,6 @@ import org.json.JSONObject;
 public class BridgeService extends Service {
     public static final int PORT = 8765;
     public static volatile String pin = "1234";
-    public static volatile boolean uiVisible = false;
-    private static volatile BridgeService self;
 
     private static final ConcurrentHashMap<String, WebView> poolWv = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, MutableContextWrapper> poolCtx = new ConcurrentHashMap<>();
@@ -72,18 +70,11 @@ public class BridgeService extends Service {
     private ServerSocket serverSocket;
     private final ExecutorService pool = Executors.newCachedThreadPool();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final Runnable sleepRunnable = () -> {
-        if (uiVisible) return;
-        for (WebView wv : poolWv.values()) {
-            try { wv.onPause(); wv.pauseTimers(); } catch (Exception ignored) {}
-        }
-    };
     private volatile boolean running = false;
 
     @Override
     public void onCreate() {
         super.onCreate();
-        self = this;
         pin = getSharedPreferences("bridge_prefs", MODE_PRIVATE).getString("pin", "1234");
         NotifService.onlyImportantApps = getSharedPreferences("bridge_prefs", MODE_PRIVATE).getBoolean("only_imp", false);
         if (Build.VERSION.SDK_INT >= 26) {
@@ -104,7 +95,7 @@ public class BridgeService extends Service {
         if ("ig".equals(key)) return "https://www.instagram.com/";
         if ("fb".equals(key)) return "https://m.facebook.com/";
         if ("gemini".equals(key)) return "https://gemini.google.com/app";
-        if ("reddit".equals(key)) return "https://www.reddit.com/";
+        if ("reddit".equals(key)) return "https://old.reddit.com/";
         return "https://news.google.com/?hl=it&gl=IT&ceid=IT:it";
     }
 
@@ -122,6 +113,7 @@ public class BridgeService extends Service {
         WebSettings s = wv.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
+        s.setMediaPlaybackRequiresUserGesture(true);
         s.setUserAgentString(MainActivity.MOBILE_UA);
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true);
@@ -140,12 +132,6 @@ public class BridgeService extends Service {
             MutableContextWrapper mcw = poolCtx.get(e.getKey());
             if (mcw != null) mcw.setBaseContext(appCtx);
         }
-        if (self != null) self.scheduleSleep();
-    }
-
-    private void scheduleSleep() {
-        mainHandler.removeCallbacks(sleepRunnable);
-        mainHandler.postDelayed(sleepRunnable, 6000);
     }
 
     private void listenLoop() {
@@ -207,16 +193,16 @@ public class BridgeService extends Service {
             else if ("/vid".equals(path)) serveVideoProxy(out, q.get("url"));
             else if ("/news/feed".equals(path)) sendJson(out, 200, NativeSocialHttp.googleNewsRss());
             else if ("/news/article".equals(path)) sendJson(out, 200, NativeSocialHttp.fetchArticleJson(q.getOrDefault("url", "")));
-            else if ("/reddit/feed".equals(path)) sendJson(out, 200, NativeSocialHttp.redditFeed(q.getOrDefault("sub", ""), q.getOrDefault("sort", "hot"), q.getOrDefault("after", "")));
-            else if ("/reddit/comments".equals(path)) sendJson(out, 200, NativeSocialHttp.redditComments(q.getOrDefault("url", "")));
-            else if ("/reddit/user".equals(path)) sendJson(out, 200, NativeSocialHttp.redditUser(q.getOrDefault("u", "")));
-            else if ("/reddit/sub_info".equals(path)) sendJson(out, 200, NativeSocialHttp.redditSubInfo(q.getOrDefault("sub", "")));
-            else if ("/reddit/sub_toggle".equals(path)) sendJson(out, 200, NativeSocialHttp.redditPost("/api/subscribe", "action=" + ("1".equals(q.get("unsub")) ? "unsub" : "sub") + "&sr_name=" + URLEncoder.encode(q.getOrDefault("sub", ""), "UTF-8")));
-            else if ("/reddit/search".equals(path)) sendJson(out, 200, NativeSocialHttp.redditSearch(q.getOrDefault("q", "")));
-            else if ("/reddit/saved".equals(path)) sendJson(out, 200, NativeSocialHttp.redditSaved());
-            else if ("/reddit/vote".equals(path)) sendJson(out, 200, NativeSocialHttp.redditPost("/api/vote", "id=" + URLEncoder.encode(q.getOrDefault("id", ""), "UTF-8") + "&dir=" + q.getOrDefault("dir", "1")));
-            else if ("/reddit/save".equals(path)) sendJson(out, 200, NativeSocialHttp.redditPost("/api/save", "id=" + URLEncoder.encode(q.getOrDefault("id", ""), "UTF-8")));
-            else if ("/reddit/comment_add".equals(path)) sendJson(out, 200, NativeSocialHttp.redditPost("/api/comment", "thing_id=" + URLEncoder.encode(q.getOrDefault("thing", ""), "UTF-8") + "&text=" + URLEncoder.encode(q.getOrDefault("text", ""), "UTF-8")));
+            else if ("/reddit/feed".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditFeed(q.getOrDefault("sub", ""), q.getOrDefault("sort", "hot"), q.getOrDefault("after", "")), 10));
+            else if ("/reddit/comments".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditComments(q.getOrDefault("url", "")), 10));
+            else if ("/reddit/user".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditUser(q.getOrDefault("u", "")), 10));
+            else if ("/reddit/sub_info".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditSubInfo(q.getOrDefault("sub", "")), 8));
+            else if ("/reddit/sub_toggle".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditAction("/api/subscribe", "action=" + ("1".equals(q.get("unsub")) ? "unsub" : "sub") + "&sr_name=" + URLEncoder.encode(q.getOrDefault("sub", ""), "UTF-8")), 8));
+            else if ("/reddit/search".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditSearch(q.getOrDefault("q", "")), 10));
+            else if ("/reddit/saved".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditSaved(), 10));
+            else if ("/reddit/vote".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditAction("/api/vote", "id=" + URLEncoder.encode(q.getOrDefault("id", ""), "UTF-8") + "&dir=" + q.getOrDefault("dir", "1")), 8));
+            else if ("/reddit/save".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditAction("/api/save", "id=" + URLEncoder.encode(q.getOrDefault("id", ""), "UTF-8")), 8));
+            else if ("/reddit/comment_add".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditAction("/api/comment", "thing_id=" + URLEncoder.encode(q.getOrDefault("thing", ""), "UTF-8") + "&text=" + URLEncoder.encode(q.getOrDefault("text", ""), "UTF-8")), 10));
             else if ("/fb/feed".equals(path)) sendJson(out, 200, evalLazy("fb", JsScripts.fbFeed(false), 10));
             else if ("/fb/more".equals(path)) sendJson(out, 200, evalLazy("fb", JsScripts.fbFeed(true), 10));
             else if ("/fb/like".equals(path)) sendJson(out, 200, evalLazy("fb", JsScripts.fbLike(q.getOrDefault("id", "0")), 6));
@@ -227,16 +213,17 @@ public class BridgeService extends Service {
             else if ("/gemini/chats".equals(path)) sendJson(out, 200, evalLazy("gemini", JsScripts.geminiListChats(), 8));
             else if ("/gemini/open".equals(path)) sendJson(out, 200, loadAndRead("gemini", q.getOrDefault("url", ""), JsScripts.geminiReadThread()));
             else if ("/gemini/new".equals(path)) { loadUrl("gemini", "https://gemini.google.com/app"); sendJson(out, 200, "{\"ok\":true}"); }
-            else if ("/gemini/ask".equals(path)) sendJson(out, 200, evalLazy("gemini", JsScripts.geminiAsk(q.getOrDefault("q", ""), q.getOrDefault("model", "auto"), q.getOrDefault("think", "medio")), 28));
-            else if ("/gemini/edit".equals(path)) sendJson(out, 200, evalLazy("gemini", JsScripts.geminiEdit(q.getOrDefault("idx", "0"), q.getOrDefault("q", ""), q.getOrDefault("model", "auto"), q.getOrDefault("think", "medio")), 28));
+            else if ("/gemini/ask".equals(path)) sendJson(out, 200, evalLazy("gemini", JsScripts.geminiAsk(q.getOrDefault("q", ""), q.getOrDefault("model", "auto"), q.getOrDefault("think", "medio")), 32));
+            else if ("/gemini/edit".equals(path)) sendJson(out, 200, evalLazy("gemini", JsScripts.geminiEdit(q.getOrDefault("idx", "0"), q.getOrDefault("q", ""), q.getOrDefault("model", "auto"), q.getOrDefault("think", "medio")), 32));
             else if ("/ig/feed".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igFeed(q.getOrDefault("max_id", "")), 10));
             else if ("/ig/explore".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igExplore(), 10));
+            else if ("/ig/tag".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igTagFeed(q.getOrDefault("tag", "")), 10));
             else if ("/ig/saved".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igSaved(), 10));
             else if ("/ig/stories".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igStories(), 10));
             else if ("/ig/story".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igStoryMedia(q.getOrDefault("id", "")), 10));
             else if ("/ig/profile".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igProfile(q.getOrDefault("user", "")), 10));
             else if ("/ig/follow".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igFollow(q.getOrDefault("id", ""), "1".equals(q.get("unfollow"))), 8));
-            else if ("/ig/search".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igSearch(q.getOrDefault("q", "")), 8));
+            else if ("/ig/search".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igSearch(q.getOrDefault("q", "")), 10));
             else if ("/ig/comments".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igComments(q.getOrDefault("id", "")), 10));
             else if ("/ig/comment_add".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igAddComment(q.getOrDefault("id", ""), q.getOrDefault("text", "")), 10));
             else if ("/ig/like".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igLike(q.getOrDefault("id", "")), 8));
@@ -252,7 +239,6 @@ public class BridgeService extends Service {
             WebView wv = getOrCreateWebView(getApplicationContext(), key);
             wv.onResume(); wv.resumeTimers(); wv.loadUrl(url);
         });
-        scheduleSleep();
     }
 
     private String loadAndRead(String key, String url, String readScript) {
@@ -277,7 +263,6 @@ public class BridgeService extends Service {
         });
         try { latch.await(timeoutSec + (wasNew ? 3 : 0), TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
         latches.remove(reqId);
-        scheduleSleep();
         String res = results.remove(reqId);
         return (res != null && !res.isEmpty()) ? res : "{\"ok\":false,\"err\":\"Timeout JS\"}";
     }
