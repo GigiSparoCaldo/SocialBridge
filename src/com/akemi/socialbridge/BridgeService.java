@@ -89,6 +89,7 @@ public class BridgeService extends Service {
         }
         running = true;
         pool.execute(this::listenLoop);
+        mainHandler.post(() -> getOrCreateWebView(getApplicationContext(), "ig"));
     }
 
     public static String startUrlFor(String key) {
@@ -258,7 +259,7 @@ public class BridgeService extends Service {
         mainHandler.post(() -> {
             WebView wv = getOrCreateWebView(getApplicationContext(), key);
             wv.onResume(); wv.resumeTimers();
-            if (wasNew) mainHandler.postDelayed(() -> wv.evaluateJavascript(readyJs, null), 2600);
+            if (wasNew) mainHandler.postDelayed(() -> wv.evaluateJavascript(readyJs, null), 1400);
             else wv.evaluateJavascript(readyJs, null);
         });
         try { latch.await(timeoutSec + (wasNew ? 3 : 0), TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
@@ -334,11 +335,12 @@ public class BridgeService extends Service {
             byte[] bytes = raw.toByteArray();
             BitmapFactory.Options o = new BitmapFactory.Options(); o.inJustDecodeBounds = true;
             BitmapFactory.decodeByteArray(bytes, 0, bytes.length, o);
-            int sample = 1; while (o.outWidth / sample > 420) sample *= 2;
+            int maxW = (imgUrl.contains("150x150") || imgUrl.contains("profile")) ? 110 : 360;
+            int sample = 1; while (o.outWidth / sample > maxW) sample *= 2;
             o.inJustDecodeBounds = false; o.inSampleSize = sample;
             Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, o);
             ByteArrayOutputStream jpg = new ByteArrayOutputStream();
-            bmp.compress(Bitmap.CompressFormat.JPEG, 72, jpg);
+            bmp.compress(Bitmap.CompressFormat.JPEG, 66, jpg);
             byte[] outBytes = jpg.toByteArray();
             String hdr = "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: " + outBytes.length + "\r\nConnection: close\r\n\r\n";
             out.write(hdr.getBytes(StandardCharsets.UTF_8)); out.write(outBytes); out.flush();
