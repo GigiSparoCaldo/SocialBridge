@@ -50,6 +50,7 @@ import org.json.JSONObject;
 public class BridgeService extends Service {
     public static final int PORT = 8765;
     public static volatile String pin = "1234";
+    public static volatile boolean uiVisible = false;
 
     private static final ConcurrentHashMap<String, WebView> poolWv = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, MutableContextWrapper> poolCtx = new ConcurrentHashMap<>();
