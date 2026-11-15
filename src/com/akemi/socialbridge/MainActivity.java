@@ -12,7 +12,6 @@ import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.view.Gravity;
-import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.WebSettings;
@@ -35,7 +34,7 @@ public class MainActivity extends Activity {
     public static final String MOBILE_UA = "Mozilla/5.0 (Linux; Android 14; SM-F731B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
     private static final int PICK_FILE = 42;
 
-    private WebView igWeb, redditWeb, newsWeb;
+    private WebView igWeb, redditWeb, newsWeb, activeWeb;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -120,11 +119,10 @@ public class MainActivity extends Activity {
         root.addView(bar2);
 
         FrameLayout stack = new FrameLayout(this);
-        igWeb = buildWebView("https://www.instagram.com/");
-        redditWeb = buildWebView("https://www.reddit.com/");
         newsWeb = buildWebView("https://news.google.com/?hl=it&gl=IT&ceid=IT:it");
-        redditWeb.setVisibility(View.GONE);
-        newsWeb.setVisibility(View.GONE);
+        redditWeb = buildWebView("https://www.reddit.com/");
+        igWeb = buildWebView("https://www.instagram.com/");
+        activeWeb = igWeb;
 
         BridgeService.igWeb = igWeb;
         BridgeService.redditWeb = redditWeb;
@@ -132,23 +130,25 @@ public class MainActivity extends Activity {
 
         FrameLayout.LayoutParams fp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        stack.addView(igWeb, fp); stack.addView(redditWeb, fp); stack.addView(newsWeb, fp);
+        stack.addView(newsWeb, fp);
+        stack.addView(redditWeb, fp);
+        stack.addView(igWeb, fp);
         root.addView(stack, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         btnIg.setOnClickListener(v -> {
-            igWeb.setVisibility(View.VISIBLE); redditWeb.setVisibility(View.GONE); newsWeb.setVisibility(View.GONE);
+            activeWeb = igWeb; igWeb.bringToFront();
             btnIg.setBackgroundColor(Color.parseColor("#DB2777"));
             btnRd.setBackgroundColor(Color.parseColor("#1E293B"));
             btnNw.setBackgroundColor(Color.parseColor("#1E293B"));
         });
         btnRd.setOnClickListener(v -> {
-            redditWeb.setVisibility(View.VISIBLE); igWeb.setVisibility(View.GONE); newsWeb.setVisibility(View.GONE);
+            activeWeb = redditWeb; redditWeb.bringToFront();
             btnRd.setBackgroundColor(Color.parseColor("#EA580C"));
             btnIg.setBackgroundColor(Color.parseColor("#1E293B"));
             btnNw.setBackgroundColor(Color.parseColor("#1E293B"));
         });
         btnNw.setOnClickListener(v -> {
-            newsWeb.setVisibility(View.VISIBLE); igWeb.setVisibility(View.GONE); redditWeb.setVisibility(View.GONE);
+            activeWeb = newsWeb; newsWeb.bringToFront();
             btnNw.setBackgroundColor(Color.parseColor("#0284C7"));
             btnIg.setBackgroundColor(Color.parseColor("#1E293B"));
             btnRd.setBackgroundColor(Color.parseColor("#1E293B"));
@@ -205,6 +205,7 @@ public class MainActivity extends Activity {
     @SuppressLint("SetJavaScriptEnabled")
     private WebView buildWebView(String startUrl) {
         WebView wv = new WebView(this);
+        wv.setBackgroundColor(Color.parseColor("#0B1120"));
         WebSettings s = wv.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -218,9 +219,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        WebView active = igWeb.getVisibility() == View.VISIBLE ? igWeb
-                : redditWeb.getVisibility() == View.VISIBLE ? redditWeb : newsWeb;
-        if (active.canGoBack()) active.goBack();
+        if (activeWeb != null && activeWeb.canGoBack()) activeWeb.goBack();
         else moveTaskToBack(true);
     }
 }
