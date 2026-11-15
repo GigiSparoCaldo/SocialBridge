@@ -152,12 +152,13 @@ public class BridgeService extends Service {
             if (reqLine == null || reqLine.isEmpty()) return;
             String[] parts = reqLine.split(" ");
             String method = parts[0], fullPath = parts.length > 1 ? parts[1] : "/";
-            String reqPin = "", fileNameHdr = "watch_file.bin";
+            String reqPin = "", rangeHdr = "", fileNameHdr = "watch_file.bin";
             int contentLen = 0;
             String line;
             while ((line = readLine(rawIn)) != null && !line.isEmpty()) {
                 String low = line.toLowerCase();
                 if (low.startsWith("x-pin:")) reqPin = line.substring(6).trim();
+                else if (low.startsWith("range:")) rangeHdr = line.substring(6).trim();
                 else if (low.startsWith("content-length:")) contentLen = Integer.parseInt(line.substring(15).trim());
                 else if (low.startsWith("x-filename:")) fileNameHdr = URLDecoder.decode(line.substring(11).trim(), "UTF-8");
             }
@@ -192,7 +193,7 @@ public class BridgeService extends Service {
                     out.write(hdr.getBytes(StandardCharsets.UTF_8)); out.write(fb); out.flush();
                 }
             } else if ("/img".equals(path)) serveCompressedImage(out, q.get("url"));
-            else if ("/vid".equals(path)) serveVideoProxy(out, q.get("url"));
+            else if ("/vid".equals(path)) serveVideoProxy(out, q.get("url"), rangeHdr);
             else if ("/news/feed".equals(path)) sendJson(out, 200, NativeSocialHttp.googleNewsRss());
             else if ("/news/article".equals(path)) sendJson(out, 200, NativeSocialHttp.fetchArticleJson(q.getOrDefault("url", "")));
             else if ("/reddit/feed".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditFeed(q.getOrDefault("sub", ""), q.getOrDefault("sort", "hot"), q.getOrDefault("after", "")), 10));
@@ -222,7 +223,7 @@ public class BridgeService extends Service {
             else if ("/ig/tag".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igTagFeed(q.getOrDefault("tag", "")), 10));
             else if ("/ig/saved".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igSaved(), 10));
             else if ("/ig/stories".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igStories(), 10));
-            else if ("/ig/story".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igStoryMedia(q.getOrDefault("id", "")), 10));
+            else if ("/ig/story".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igStoryMedia(q.getOrDefault("id", ""), q.getOrDefault("uid", "")), 10));
             else if ("/ig/profile".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igProfile(q.getOrDefault("user", "")), 10));
             else if ("/ig/follow".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igFollow(q.getOrDefault("id", ""), "1".equals(q.get("unfollow"))), 8));
             else if ("/ig/search".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igSearch(q.getOrDefault("q", "")), 10));
@@ -269,19 +270,34 @@ public class BridgeService extends Service {
         return (res != null && !res.isEmpty()) ? res : "{\"ok\":false,\"err\":\"Timeout JS\"}";
     }
 
-    private void serveVideoProxy(OutputStream out, String vidUrl) throws Exception {
+    private void serveVideoProxy(OutputStream out, String vidUrl, String rangeHdr) throws Exception {
         if (vidUrl == null || vidUrl.isEmpty()) { sendJson(out, 400, "{}"); return; }
         HttpURLConnection c = (HttpURLConnection) new URL(vidUrl).openConnection();
-        c.setConnectTimeout(9000); c.setReadTimeout(15000);
+        c.setConnectTimeout(8000);
+        c.setReadTimeout(15000);
         c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
+        c.setRequestProperty("Referer", "https://www.instagram.com/");
+        if (rangeHdr != null && !rangeHdr.isEmpty()) c.setRequestProperty("Range", rangeHdr);
         String cookie = CookieManager.getInstance().getCookie(vidUrl);
         if (cookie != null) c.setRequestProperty("Cookie", cookie);
-        try (InputStream is = c.getInputStream(); ByteArrayOutputStream raw = new ByteArrayOutputStream()) {
-            byte[] buf = new byte[16384]; int n;
-            while ((n = is.read(buf)) != -1 && raw.size() < 9 * 1024 * 1024) raw.write(buf, 0, n);
-            byte[] data = raw.toByteArray();
-            String hdr = "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: " + data.length + "\r\nConnection: close\r\n\r\n";
-            out.write(hdr.getBytes(StandardCharsets.UTF_8)); out.write(data); out.flush();
+        int code = c.getResponseCode();
+        String cType = c.getContentType() != null ? c.getContentType() : "video/mp4";
+        String cLen = c.getHeaderField("Content-Length");
+        String cRange = c.getHeaderField("Content-Range");
+        StringBuilder sb = new StringBuilder();
+        sb.append("HTTP/1.1 ").append(code == 206 ? "206 Partial Content" : "200 OK").append("\r\n");
+        sb.append("Content-Type: ").append(cType).append("\r\n");
+        sb.append("Accept-Ranges: bytes\r\n");
+        if (cLen != null) sb.append("Content-Length: ").append(cLen).append("\r\n");
+        if (cRange != null) sb.append("Content-Range: ").append(cRange).append("\r\n");
+        sb.append("Connection: close\r\n\r\n");
+        out.write(sb.toString().getBytes(StandardCharsets.UTF_8));
+        try (InputStream is = code >= 400 ? c.getErrorStream() : c.getInputStream()) {
+            if (is != null) {
+                byte[] buf = new byte[16384]; int n;
+                while ((n = is.read(buf)) != -1) out.write(buf, 0, n);
+            }
+            out.flush();
         } finally { c.disconnect(); }
     }
 
@@ -336,12 +352,12 @@ public class BridgeService extends Service {
             byte[] bytes = raw.toByteArray();
             BitmapFactory.Options o = new BitmapFactory.Options(); o.inJustDecodeBounds = true;
             BitmapFactory.decodeByteArray(bytes, 0, bytes.length, o);
-            int maxW = (imgUrl.contains("150x150") || imgUrl.contains("profile")) ? 110 : 360;
+            int maxW = (imgUrl.contains("150x150") || imgUrl.contains("profile")) ? 140 : 720;
             int sample = 1; while (o.outWidth / sample > maxW) sample *= 2;
             o.inJustDecodeBounds = false; o.inSampleSize = sample;
             Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, o);
             ByteArrayOutputStream jpg = new ByteArrayOutputStream();
-            bmp.compress(Bitmap.CompressFormat.JPEG, 66, jpg);
+            bmp.compress(Bitmap.CompressFormat.JPEG, 84, jpg);
             byte[] outBytes = jpg.toByteArray();
             String hdr = "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: " + outBytes.length + "\r\nConnection: close\r\n\r\n";
             out.write(hdr.getBytes(StandardCharsets.UTF_8)); out.write(outBytes); out.flush();
