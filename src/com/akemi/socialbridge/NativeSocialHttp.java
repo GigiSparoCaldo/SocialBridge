@@ -18,18 +18,18 @@ import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserFactory;
 
 public class NativeSocialHttp {
-    private static final String UA_REDDIT = "android:com.akemi.wristsocial:v2.0 (by /u/akemi_watch)";
     private static volatile String cachedModhash = "";
 
     public static String redditGet(String pathAndQuery) {
         try {
-            String urlStr = pathAndQuery.startsWith("http") ? pathAndQuery : "https://www.reddit.com" + pathAndQuery;
+            String urlStr = pathAndQuery.startsWith("http") ? pathAndQuery : "https://old.reddit.com" + pathAndQuery;
             HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
-            c.setConnectTimeout(8000);
-            c.setReadTimeout(11000);
-            c.setRequestProperty("User-Agent", UA_REDDIT);
+            c.setConnectTimeout(7000);
+            c.setReadTimeout(10000);
+            c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
             c.setRequestProperty("Accept", "application/json");
-            String ck = CookieManager.getInstance().getCookie("https://www.reddit.com");
+            String ck = CookieManager.getInstance().getCookie("https://old.reddit.com");
+            if (ck == null || ck.isEmpty()) ck = CookieManager.getInstance().getCookie("https://www.reddit.com");
             if (ck != null && !ck.isEmpty()) c.setRequestProperty("Cookie", ck);
             try (InputStream is = c.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
                 byte[] buf = new byte[8192]; int n;
@@ -121,13 +121,14 @@ public class NativeSocialHttp {
                 JSONObject me = new JSONObject(redditGet("/api/me.json")).optJSONObject("data");
                 if (me != null) cachedModhash = me.optString("modhash", "");
             }
-            HttpURLConnection c = (HttpURLConnection) new URL("https://www.reddit.com" + endpoint).openConnection();
+            HttpURLConnection c = (HttpURLConnection) new URL("https://old.reddit.com" + endpoint).openConnection();
             c.setRequestMethod("POST"); c.setDoOutput(true);
-            c.setConnectTimeout(8000); c.setReadTimeout(10000);
-            c.setRequestProperty("User-Agent", UA_REDDIT);
+            c.setConnectTimeout(7000); c.setReadTimeout(9000);
+            c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
             c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
             if (!cachedModhash.isEmpty()) c.setRequestProperty("X-Modhash", cachedModhash);
-            String ck = CookieManager.getInstance().getCookie("https://www.reddit.com");
+            String ck = CookieManager.getInstance().getCookie("https://old.reddit.com");
+            if (ck == null || ck.isEmpty()) ck = CookieManager.getInstance().getCookie("https://www.reddit.com");
             if (ck != null) c.setRequestProperty("Cookie", ck);
             String body = formParams + "&uh=" + URLEncoder.encode(cachedModhash, "UTF-8");
             try (OutputStream os = c.getOutputStream()) { os.write(body.getBytes(StandardCharsets.UTF_8)); }
@@ -139,10 +140,8 @@ public class NativeSocialHttp {
     public static String googleNewsRss() {
         try {
             HttpURLConnection c = (HttpURLConnection) new URL("https://news.google.com/rss?hl=it&gl=IT&ceid=IT:it").openConnection();
-            c.setConnectTimeout(7000); c.setReadTimeout(9000);
+            c.setConnectTimeout(6000); c.setReadTimeout(8000);
             c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
-            String ck = CookieManager.getInstance().getCookie("https://news.google.com");
-            if (ck != null) c.setRequestProperty("Cookie", ck);
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             try (InputStream is = c.getInputStream()) {
                 byte[] buf = new byte[8192]; int n;
@@ -177,7 +176,7 @@ public class NativeSocialHttp {
             for (int i = 0; i < 6; i++) {
                 HttpURLConnection c = (HttpURLConnection) new URL(cur).openConnection();
                 c.setInstanceFollowRedirects(false);
-                c.setConnectTimeout(8000); c.setReadTimeout(10000);
+                c.setConnectTimeout(7000); c.setReadTimeout(9000);
                 c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
                 c.setRequestProperty("Cookie", "CONSENT=YES+cb.20260101-00-p0.it+FX+111");
                 int code = c.getResponseCode();

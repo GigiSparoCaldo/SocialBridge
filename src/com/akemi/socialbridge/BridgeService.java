@@ -54,6 +54,7 @@ public class BridgeService extends Service {
 
     private static final ConcurrentHashMap<String, WebView> poolWv = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, MutableContextWrapper> poolCtx = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, CountDownLatch> readyLatches = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, CountDownLatch> latches = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, String> results = new ConcurrentHashMap<>();
 
@@ -91,6 +92,8 @@ public class BridgeService extends Service {
         running = true;
         pool.execute(this::listenLoop);
         mainHandler.post(() -> getOrCreateWebView(getApplicationContext(), "ig"));
+        mainHandler.postDelayed(() -> getOrCreateWebView(getApplicationContext(), "gemini"), 1500);
+        mainHandler.postDelayed(() -> getOrCreateWebView(getApplicationContext(), "fb"), 3000);
     }
 
     public static String startUrlFor(String key) {
@@ -102,13 +105,15 @@ public class BridgeService extends Service {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    public static WebView getOrCreateWebView(Context ctx, String key) {
+    public static WebView getOrCreateWebView(Context ctx, final String key) {
         WebView existing = poolWv.get(key);
         if (existing != null) {
             MutableContextWrapper mcw = poolCtx.get(key);
             if (mcw != null) mcw.setBaseContext(ctx);
             return existing;
         }
+        final CountDownLatch rl = new CountDownLatch(1);
+        readyLatches.put(key, rl);
         MutableContextWrapper mcw = new MutableContextWrapper(ctx);
         WebView wv = new WebView(mcw);
         wv.setBackgroundColor(Color.parseColor("#0B1120"));
@@ -120,7 +125,13 @@ public class BridgeService extends Service {
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true);
         wv.addJavascriptInterface(new JsCallback(), "AndroidBridge");
-        wv.setWebViewClient(new WebViewClient());
+        wv.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                rl.countDown();
+            }
+        });
         wv.loadUrl(startUrlFor(key));
         poolCtx.put(key, mcw);
         poolWv.put(key, wv);
@@ -193,19 +204,19 @@ public class BridgeService extends Service {
                     out.write(hdr.getBytes(StandardCharsets.UTF_8)); out.write(fb); out.flush();
                 }
             } else if ("/img".equals(path)) serveCompressedImage(out, q.get("url"));
-            else if ("/vid".equals(path)) serveVideoProxy(out, q.get("url"), rangeHdr);
+            else if ("/vid".equals(path)) serveVideoProxy(out, method, q.get("url"), rangeHdr);
             else if ("/news/feed".equals(path)) sendJson(out, 200, NativeSocialHttp.googleNewsRss());
             else if ("/news/article".equals(path)) sendJson(out, 200, NativeSocialHttp.fetchArticleJson(q.getOrDefault("url", "")));
-            else if ("/reddit/feed".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditFeed(q.getOrDefault("sub", ""), q.getOrDefault("sort", "hot"), q.getOrDefault("after", "")), 10));
-            else if ("/reddit/comments".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditComments(q.getOrDefault("url", "")), 10));
-            else if ("/reddit/user".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditUser(q.getOrDefault("u", "")), 10));
-            else if ("/reddit/sub_info".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditSubInfo(q.getOrDefault("sub", "")), 8));
-            else if ("/reddit/sub_toggle".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditAction("/api/subscribe", "action=" + ("1".equals(q.get("unsub")) ? "unsub" : "sub") + "&sr_name=" + URLEncoder.encode(q.getOrDefault("sub", ""), "UTF-8")), 8));
-            else if ("/reddit/search".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditSearch(q.getOrDefault("q", "")), 10));
-            else if ("/reddit/saved".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditSaved(), 10));
-            else if ("/reddit/vote".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditAction("/api/vote", "id=" + URLEncoder.encode(q.getOrDefault("id", ""), "UTF-8") + "&dir=" + q.getOrDefault("dir", "1")), 8));
-            else if ("/reddit/save".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditAction("/api/save", "id=" + URLEncoder.encode(q.getOrDefault("id", ""), "UTF-8")), 8));
-            else if ("/reddit/comment_add".equals(path)) sendJson(out, 200, evalLazy("reddit", JsScripts.redditAction("/api/comment", "thing_id=" + URLEncoder.encode(q.getOrDefault("thing", ""), "UTF-8") + "&text=" + URLEncoder.encode(q.getOrDefault("text", ""), "UTF-8")), 10));
+            else if ("/reddit/feed".equals(path)) sendJson(out, 200, NativeSocialHttp.redditFeed(q.getOrDefault("sub", ""), q.getOrDefault("sort", "hot"), q.getOrDefault("after", "")));
+            else if ("/reddit/comments".equals(path)) sendJson(out, 200, NativeSocialHttp.redditComments(q.getOrDefault("url", "")));
+            else if ("/reddit/user".equals(path)) sendJson(out, 200, NativeSocialHttp.redditUser(q.getOrDefault("u", "")));
+            else if ("/reddit/sub_info".equals(path)) sendJson(out, 200, NativeSocialHttp.redditSubInfo(q.getOrDefault("sub", "")));
+            else if ("/reddit/sub_toggle".equals(path)) sendJson(out, 200, NativeSocialHttp.redditPost("/api/subscribe", "action=" + ("1".equals(q.get("unsub")) ? "unsub" : "sub") + "&sr_name=" + URLEncoder.encode(q.getOrDefault("sub", ""), "UTF-8")));
+            else if ("/reddit/search".equals(path)) sendJson(out, 200, NativeSocialHttp.redditSearch(q.getOrDefault("q", "")));
+            else if ("/reddit/saved".equals(path)) sendJson(out, 200, NativeSocialHttp.redditSaved());
+            else if ("/reddit/vote".equals(path)) sendJson(out, 200, NativeSocialHttp.redditPost("/api/vote", "id=" + URLEncoder.encode(q.getOrDefault("id", ""), "UTF-8") + "&dir=" + q.getOrDefault("dir", "1")));
+            else if ("/reddit/save".equals(path)) sendJson(out, 200, NativeSocialHttp.redditPost("/api/save", "id=" + URLEncoder.encode(q.getOrDefault("id", ""), "UTF-8")));
+            else if ("/reddit/comment_add".equals(path)) sendJson(out, 200, NativeSocialHttp.redditPost("/api/comment", "thing_id=" + URLEncoder.encode(q.getOrDefault("thing", ""), "UTF-8") + "&text=" + URLEncoder.encode(q.getOrDefault("text", ""), "UTF-8")));
             else if ("/fb/feed".equals(path)) sendJson(out, 200, evalLazy("fb", JsScripts.fbFeed(false), 10));
             else if ("/fb/more".equals(path)) sendJson(out, 200, evalLazy("fb", JsScripts.fbFeed(true), 10));
             else if ("/fb/like".equals(path)) sendJson(out, 200, evalLazy("fb", JsScripts.fbLike(q.getOrDefault("id", "0")), 6));
@@ -219,22 +230,33 @@ public class BridgeService extends Service {
             else if ("/gemini/ask".equals(path)) sendJson(out, 200, evalLazy("gemini", JsScripts.geminiAsk(q.getOrDefault("q", ""), q.getOrDefault("model", "auto"), q.getOrDefault("think", "medio")), 32));
             else if ("/gemini/edit".equals(path)) sendJson(out, 200, evalLazy("gemini", JsScripts.geminiEdit(q.getOrDefault("idx", "0"), q.getOrDefault("q", ""), q.getOrDefault("model", "auto"), q.getOrDefault("think", "medio")), 32));
             else if ("/ig/feed".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igFeed(q.getOrDefault("max_id", "")), 10));
-            else if ("/ig/explore".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igExplore(), 10));
-            else if ("/ig/tag".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igTagFeed(q.getOrDefault("tag", "")), 10));
-            else if ("/ig/saved".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igSaved(), 10));
-            else if ("/ig/stories".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igStories(), 10));
-            else if ("/ig/story".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igStoryMedia(q.getOrDefault("id", ""), q.getOrDefault("uid", "")), 10));
-            else if ("/ig/profile".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igProfile(q.getOrDefault("user", "")), 10));
-            else if ("/ig/follow".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igFollow(q.getOrDefault("id", ""), "1".equals(q.get("unfollow"))), 8));
-            else if ("/ig/search".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igSearch(q.getOrDefault("q", "")), 10));
-            else if ("/ig/comments".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igComments(q.getOrDefault("id", "")), 10));
-            else if ("/ig/comment_add".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igAddComment(q.getOrDefault("id", ""), q.getOrDefault("text", "")), 10));
-            else if ("/ig/like".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igLike(q.getOrDefault("id", "")), 8));
-            else if ("/ig/dm".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igDmInbox(), 10));
-            else if ("/ig/dm_thread".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igDmThread(q.getOrDefault("id", "")), 10));
-            else if ("/ig/dm_send".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igDmSend(q.getOrDefault("id", ""), q.getOrDefault("text", "")), 10));
+            else if ("/ig/explore".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igExplore(), 8));
+            else if ("/ig/tag".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igTagFeed(q.getOrDefault("tag", "")), 8));
+            else if ("/ig/saved".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igSaved(), 8));
+            else if ("/ig/stories".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igStories(), 8));
+            else if ("/ig/story".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igStoryMedia(q.getOrDefault("id", ""), q.getOrDefault("uid", "")), 8));
+            else if ("/ig/profile".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igProfile(q.getOrDefault("user", "")), 9));
+            else if ("/ig/follow".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igFollow(q.getOrDefault("id", ""), "1".equals(q.get("unfollow"))), 7));
+            else if ("/ig/search".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igSearch(q.getOrDefault("q", "")), 7));
+            else if ("/ig/comments".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igComments(q.getOrDefault("id", "")), 8));
+            else if ("/ig/comment_add".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igAddComment(q.getOrDefault("id", ""), q.getOrDefault("text", "")), 8));
+            else if ("/ig/like".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igLike(q.getOrDefault("id", "")), 7));
+            else if ("/ig/dm".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igDmInbox(), 8));
+            else if ("/ig/dm_thread".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igDmThread(q.getOrDefault("id", "")), 8));
+            else if ("/ig/dm_send".equals(path)) sendJson(out, 200, evalLazy("ig", JsScripts.igDmSend(q.getOrDefault("id", ""), q.getOrDefault("text", "")), 8));
             else sendJson(out, 404, "{\"ok\":false}");
         } catch (Exception ignored) {}
+    }
+
+    private void ensureWebViewReady(final String key) {
+        if (!poolWv.containsKey(key)) {
+            mainHandler.post(() -> getOrCreateWebView(getApplicationContext(), key));
+            try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+        }
+        CountDownLatch rl = readyLatches.get(key);
+        if (rl != null) {
+            try { rl.await(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+        }
     }
 
     private void loadUrl(final String key, final String url) {
@@ -246,14 +268,14 @@ public class BridgeService extends Service {
 
     private String loadAndRead(String key, String url, String readScript) {
         if (url == null || url.isEmpty()) return "{\"ok\":false}";
-        boolean wasNew = !poolWv.containsKey(key);
+        ensureWebViewReady(key);
         loadUrl(key, url);
-        try { Thread.sleep(wasNew ? 3200 : 2200); } catch (InterruptedException ignored) {}
+        try { Thread.sleep(2200); } catch (InterruptedException ignored) {}
         return evalLazy(key, readScript, 8);
     }
 
     private String evalLazy(final String key, final String script, int timeoutSec) {
-        final boolean wasNew = !poolWv.containsKey(key);
+        ensureWebViewReady(key);
         final String reqId = UUID.randomUUID().toString();
         final CountDownLatch latch = new CountDownLatch(1);
         latches.put(reqId, latch);
@@ -261,25 +283,28 @@ public class BridgeService extends Service {
         mainHandler.post(() -> {
             WebView wv = getOrCreateWebView(getApplicationContext(), key);
             wv.onResume(); wv.resumeTimers();
-            if (wasNew) mainHandler.postDelayed(() -> wv.evaluateJavascript(readyJs, null), 1400);
-            else wv.evaluateJavascript(readyJs, null);
+            wv.evaluateJavascript(readyJs, null);
         });
-        try { latch.await(timeoutSec + (wasNew ? 3 : 0), TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+        try { latch.await(timeoutSec, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
         latches.remove(reqId);
         String res = results.remove(reqId);
         return (res != null && !res.isEmpty()) ? res : "{\"ok\":false,\"err\":\"Timeout JS\"}";
     }
 
-    private void serveVideoProxy(OutputStream out, String vidUrl, String rangeHdr) throws Exception {
+    private void serveVideoProxy(OutputStream out, String method, String vidUrl, String rangeHdr) throws Exception {
         if (vidUrl == null || vidUrl.isEmpty()) { sendJson(out, 400, "{}"); return; }
         HttpURLConnection c = (HttpURLConnection) new URL(vidUrl).openConnection();
-        c.setConnectTimeout(8000);
-        c.setReadTimeout(15000);
+        boolean isHead = "HEAD".equalsIgnoreCase(method);
+        c.setRequestMethod(isHead ? "HEAD" : "GET");
+        c.setConnectTimeout(6000);
+        c.setReadTimeout(12000);
         c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
+        c.setRequestProperty("Accept", "*/*");
         c.setRequestProperty("Referer", "https://www.instagram.com/");
         if (rangeHdr != null && !rangeHdr.isEmpty()) c.setRequestProperty("Range", rangeHdr);
         String cookie = CookieManager.getInstance().getCookie(vidUrl);
         if (cookie != null) c.setRequestProperty("Cookie", cookie);
+
         int code = c.getResponseCode();
         String cType = c.getContentType() != null ? c.getContentType() : "video/mp4";
         String cLen = c.getHeaderField("Content-Length");
@@ -292,12 +317,18 @@ public class BridgeService extends Service {
         if (cRange != null) sb.append("Content-Range: ").append(cRange).append("\r\n");
         sb.append("Connection: close\r\n\r\n");
         out.write(sb.toString().getBytes(StandardCharsets.UTF_8));
+        out.flush();
+        if (isHead) { c.disconnect(); return; }
+
         try (InputStream is = code >= 400 ? c.getErrorStream() : c.getInputStream()) {
             if (is != null) {
-                byte[] buf = new byte[16384]; int n;
-                while ((n = is.read(buf)) != -1) out.write(buf, 0, n);
+                byte[] buf = new byte[4096]; int n;
+                while ((n = is.read(buf)) != -1) {
+                    out.write(buf, 0, n);
+                    out.flush();
+                }
             }
-            out.flush();
+        } catch (Exception ignored) {
         } finally { c.disconnect(); }
     }
 
@@ -342,7 +373,7 @@ public class BridgeService extends Service {
     private void serveCompressedImage(OutputStream out, String imgUrl) throws Exception {
         if (imgUrl == null || imgUrl.isEmpty()) { sendJson(out, 400, "{}"); return; }
         HttpURLConnection c = (HttpURLConnection) new URL(imgUrl).openConnection();
-        c.setConnectTimeout(8000); c.setReadTimeout(10000);
+        c.setConnectTimeout(6000); c.setReadTimeout(9000);
         c.setRequestProperty("User-Agent", MainActivity.MOBILE_UA);
         String cookie = CookieManager.getInstance().getCookie(imgUrl);
         if (cookie != null) c.setRequestProperty("Cookie", cookie);

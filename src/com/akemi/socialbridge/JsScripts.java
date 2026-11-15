@@ -21,10 +21,12 @@ public class JsScripts {
             + "if(!vid)vid=bestVid(m.video_versions);"
             + "if(!imgs.length&&!vid)return null;"
             + "return {id:String(m.pk||m.id||''),user:m.user.username||'',text:(m.caption&&m.caption.text)||'',likes:m.like_count||0,comments:m.comment_count||0,img:imgs[0]||'',imgs:imgs,vid:vid};};"
-            + "const walkM=(obj,out,seen)=>{if(!obj||typeof obj!=='object'||out.length>=24)return;"
+            + "const vis=new WeakSet();"
+            + "const walkM=(obj,out,seen,d)=>{if(!obj||typeof obj!=='object'||d>7||out.length>=20||vis.has(obj))return;vis.add(obj);"
             + "if((obj.pk||obj.id)&&obj.user&&(obj.image_versions2||obj.carousel_media||obj.video_versions||obj.display_url)){"
             + "const it=mapM(obj);if(it&&!seen.has(it.id)){seen.add(it.id);out.push(it);}return;}"
-            + "Object.values(obj).forEach(v=>{if(Array.isArray(v))v.forEach(x=>walkM(x,out,seen));else if(v&&typeof v==='object')walkM(v,out,seen);});};";
+            + "const vals=Array.isArray(obj)?obj:Object.values(obj);"
+            + "for(let i=0;i<vals.length;i++){if(out.length>=20)break;walkM(vals[i],out,seen,d+1);}};";
     }
 
     public static String igFeed(String maxId) {
@@ -33,28 +35,30 @@ public class JsScripts {
                 : "'reason=pagination&max_id='+encodeURIComponent(" + JSONObject.quote(maxId) + ")";
         return "(async function(){let res={ok:true,items:[],next:''};try{" + igHdrs(true) + mapIgMediaFn()
             + "const r=await fetch('/api/v1/feed/timeline/',{method:'POST',credentials:'include',headers:h,body:" + body + "});"
-            + "if(r.ok){const j=await r.json();res.next=String(j.next_max_id||'');walkM(j.feed_items||j,res.items,new Set());}"
+            + "if(r.ok){const j=await r.json();res.next=String(j.next_max_id||'');walkM(j.feed_items||j,res.items,new Set(),0);}"
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
     }
 
     public static String igExplore() {
         return "(async function(){let res={ok:true,items:[]};try{" + igHdrs(false) + mapIgMediaFn()
-            + "const r=await fetch('/api/v1/discover/web/explore_grid/?include_fixed_destinations=true&is_nonpersonalized_explore=false',{credentials:'include',headers:h});"
-            + "if(r.ok){const j=await r.json();walkM(j,res.items,new Set());}"
+            + "const ac=new AbortController();setTimeout(()=>ac.abort(),4800);"
+            + "const r=await fetch('/api/v1/discover/web/explore_grid/?include_fixed_destinations=false',{credentials:'include',headers:h,signal:ac.signal});"
+            + "if(r.ok){const j=await r.json();walkM(j.sectional_items||j,res.items,new Set(),0);}"
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
     }
 
     public static String igTagFeed(String tag) {
         return "(async function(){let res={ok:true,items:[]};try{" + igHdrs(false) + mapIgMediaFn()
-            + "const r=await fetch('/api/v1/tags/web_info/?tag_name='+encodeURIComponent(" + JSONObject.quote(tag) + "),{credentials:'include',headers:h});"
-            + "if(r.ok){const j=await r.json();walkM(j,res.items,new Set());}"
+            + "const ac=new AbortController();setTimeout(()=>ac.abort(),4800);"
+            + "const r=await fetch('/api/v1/tags/web_info/?tag_name='+encodeURIComponent(" + JSONObject.quote(tag) + "),{credentials:'include',headers:h,signal:ac.signal});"
+            + "if(r.ok){const j=await r.json();walkM(j,res.items,new Set(),0);}"
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
     }
 
     public static String igSaved() {
         return "(async function(){let res={ok:true,items:[]};try{" + igHdrs(false) + mapIgMediaFn()
             + "const r=await fetch('/api/v1/feed/saved/posts/',{credentials:'include',headers:h});"
-            + "if(r.ok){const j=await r.json();walkM(j,res.items,new Set());}"
+            + "if(r.ok){const j=await r.json();walkM(j,res.items,new Set(),0);}"
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
     }
 
@@ -96,7 +100,7 @@ public class JsScripts {
             + "res.followers=(usr.edge_followed_by&&usr.edge_followed_by.count)||0;"
             + "res.following=(usr.edge_follow&&usr.edge_follow.count)||0;res.followed=!!usr.followed_by_viewer;"
             + "try{const r2=await fetch('/api/v1/feed/user/'+encodeURIComponent(res.id)+'/?count=18',{credentials:'include',headers:h});"
-            + "if(r2.ok){const j2=await r2.json();walkM(j2,res.items,new Set());}}catch(e){}"
+            + "if(r2.ok){const j2=await r2.json();walkM(j2,res.items,new Set(),0);}}catch(e){}"
             + "if(!res.items.length){((usr.edge_owner_to_timeline_media&&usr.edge_owner_to_timeline_media.edges)||[]).forEach(e=>{"
             + "const n=e.node||{};const cap=((n.edge_media_to_caption&&n.edge_media_to_caption.edges&&n.edge_media_to_caption.edges[0])||{node:{}}).node.text||'';"
             + "res.items.push({id:String(n.id||''),user:res.user,text:cap,likes:(n.edge_liked_by&&n.edge_liked_by.count)||0,comments:(n.edge_media_to_comment&&n.edge_media_to_comment.count)||0,img:n.display_url||'',imgs:[n.display_url||''],vid:n.video_url||''});});}}"
@@ -114,10 +118,12 @@ public class JsScripts {
             + "const qu=encodeURIComponent(" + JSONObject.quote(q) + ");"
             + "const addU=u=>{if(u&&u.username&&!seenU.has(u.username)){seenU.add(u.username);res.users.push({user:u.username,name:u.full_name||''});}};"
             + "const addT=t=>{if(t&&t.name&&!seenT.has(t.name)){seenT.add(t.name);res.tags.push({name:t.name,count:t.media_count||0});}};"
-            + "const urls=['/api/v1/fbsearch/web/top_serp/?enable_metadata=true&query='+qu,'/api/v1/web/search/topsearch/?context=blended&query='+qu,'/api/v1/users/search/?q='+qu];"
-            + "for(const u of urls){if(res.users.length>=10)break;try{const r=await fetch(u,{credentials:'include',headers:h});if(r.ok){const j=await r.json();"
-            + "(j.users||[]).forEach(w=>addU(w.user||w));(j.hashtags||[]).forEach(w=>addT(w.hashtag||w));"
-            + "(j.list||[]).forEach(w=>{if(w.user)addU(w.user);if(w.hashtag)addT(w.hashtag);});}}catch(e){}}"
+            + "const ac=new AbortController();setTimeout(()=>ac.abort(),4200);"
+            + "const reqs=[fetch('/api/v1/web/search/topsearch/?context=blended&query='+qu,{credentials:'include',headers:h,signal:ac.signal}),"
+            + "fetch('/api/v1/users/search/?q='+qu,{credentials:'include',headers:h,signal:ac.signal})];"
+            + "const all=await Promise.allSettled(reqs);"
+            + "for(const p of all){if(p.status==='fulfilled'&&p.value.ok){const j=await p.value.json();"
+            + "(j.users||[]).forEach(w=>addU(w.user||w));(j.hashtags||[]).forEach(w=>addT(w.hashtag||w));}}"
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
     }
 
@@ -146,8 +152,11 @@ public class JsScripts {
 
     public static String igDmInbox() {
         return "(async function(){let res={ok:true,threads:[]};try{" + igHdrs(false)
-            + "const r=await fetch('/api/v1/direct_v2/inbox/?limit=15',{credentials:'include',headers:h});"
-            + "const j=await r.json();res.threads=((j.inbox&&j.inbox.threads)||[]).map(t=>({id:t.thread_id||'',title:t.thread_title||((t.users&&t.users[0]&&t.users[0].username)||'Chat'),last:(t.last_permanent_item&&t.last_permanent_item.text)||'[Media]'}));"
+            + "const urls=['/api/v1/direct_v2/inbox/?persistentBadging=true&folder=&limit=20&thread_message_limit=10','https://i.instagram.com/api/v1/direct_v2/inbox/?persistentBadging=true&limit=20'];"
+            + "for(const u of urls){if(res.threads.length)break;try{const r=await fetch(u,{credentials:'include',headers:h});if(r.ok){const j=await r.json();"
+            + "res.threads=((j.inbox&&j.inbox.threads)||[]).map(t=>({id:String(t.thread_id||''),title:t.thread_title||((t.users&&t.users[0]&&t.users[0].username)||'Chat'),last:(t.last_permanent_item&&t.last_permanent_item.text)||'[Media]'}));}}catch(e){}}"
+            + "if(!res.threads.length){document.querySelectorAll('a[href*=\"/direct/t/\"]').forEach(a=>{"
+            + "const m=(a.href||'').match(/\\/direct\\/t\\/([^\\/?]+)/);if(m)res.threads.push({id:m[1],title:(a.innerText||'Chat').split('\\n')[0],last:'Apri chat'});});}"
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
     }
 
@@ -164,76 +173,6 @@ public class JsScripts {
             + "const body='action=send_item&thread_ids='+encodeURIComponent('['+JSON.stringify(" + JSONObject.quote(threadId) + ")+']')+'&text='+encodeURIComponent(" + JSONObject.quote(text) + ");"
             + "const r=await fetch('/api/v1/direct_v2/threads/broadcast/text/',{method:'POST',credentials:'include',headers:h,body:body});ok=r.ok;"
             + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:ok}));})();";
-    }
-
-    public static String redditFeed(String sub, String sort, String after) {
-        String s = sub == null ? "" : sub.trim();
-        String base = s.isEmpty() ? "/.json?limit=20&raw_json=1"
-                : ("day".equals(sort) || "week".equals(sort) || "month".equals(sort))
-                ? "/r/" + s + "/top.json?t=" + sort + "&limit=20&raw_json=1"
-                : "new".equals(sort) ? "/r/" + s + "/new.json?limit=20&raw_json=1"
-                : "/r/" + s + "/hot.json?limit=20&raw_json=1";
-        String path = (after != null && !after.isEmpty()) ? base + "&after=" + after : base;
-        return "(async function(){try{"
-            + "const r=await fetch(" + JSONObject.quote(path) + ",{credentials:'include',headers:{'Accept':'application/json'}});"
-            + "const j=await r.json();if(j&&j.data){AndroidBridge.done('__REQ_ID__',JSON.stringify(j));return;}"
-            + "}catch(e){}AndroidBridge.done('__REQ_ID__','{\"data\":{\"children\":[]}}');})();";
-    }
-
-    public static String redditComments(String permalink) {
-        String clean = permalink.replaceAll("^https?://[^/]+", "").split("\\?")[0];
-        if (!clean.startsWith("/")) clean = "/" + clean;
-        if (clean.endsWith("/")) clean = clean.substring(0, clean.length() - 1);
-        String url = clean + ".json?limit=35&depth=4&raw_json=1";
-        return "(async function(){try{"
-            + "const r=await fetch(" + JSONObject.quote(url) + ",{credentials:'include',headers:{'Accept':'application/json'}});"
-            + "const j=await r.json();if(Array.isArray(j)){AndroidBridge.done('__REQ_ID__',JSON.stringify(j));return;}"
-            + "}catch(e){}AndroidBridge.done('__REQ_ID__','[]');})();";
-    }
-
-    public static String redditUser(String username) {
-        return "(async function(){let res={ok:false,items:[]};try{"
-            + "const u=encodeURIComponent(" + JSONObject.quote(username) + ");"
-            + "const j1=await (await fetch('/user/'+u+'/about.json',{credentials:'include'})).json();const d=j1.data||{};"
-            + "res.ok=true;res.user=d.name||" + JSONObject.quote(username) + ";res.karma=(d.total_karma||(d.link_karma||0)+(d.comment_karma||0));"
-            + "res.bio=(d.subreddit&&d.subreddit.public_description)||'';"
-            + "const j2=await (await fetch('/user/'+u+'/submitted.json?limit=20&raw_json=1',{credentials:'include'})).json();"
-            + "res.items=(j2.data&&j2.data.children)||[];"
-            + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
-    }
-
-    public static String redditSubInfo(String sub) {
-        return "(async function(){let res={ok:false};try{"
-            + "const j=await (await fetch('/r/'+encodeURIComponent(" + JSONObject.quote(sub) + ")+'/about.json',{credentials:'include'})).json();"
-            + "const d=j.data||{};res={ok:true,sub:d.display_name||" + JSONObject.quote(sub) + ",desc:d.public_description||'',subs:d.subscribers||0,subscribed:!!d.user_is_subscriber};"
-            + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
-    }
-
-    public static String redditSearch(String q) {
-        return "(async function(){let res={ok:true,subs:[],posts:[]};try{"
-            + "const qu=encodeURIComponent(" + JSONObject.quote(q) + ");"
-            + "const j1=await (await fetch('/subreddits/search.json?q='+qu+'&limit=8',{credentials:'include'})).json();"
-            + "res.subs=((j1.data&&j1.data.children)||[]).map(c=>({sub:c.data.display_name,subs:c.data.subscribers||0}));"
-            + "const j2=await (await fetch('/search.json?q='+qu+'&limit=18&raw_json=1',{credentials:'include'})).json();"
-            + "res.posts=(j2.data&&j2.data.children)||[];"
-            + "}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify(res));})();";
-    }
-
-    public static String redditSaved() {
-        return "(async function(){try{"
-            + "const me=await (await fetch('/api/me.json',{credentials:'include'})).json();"
-            + "const u=me.data&&me.data.name;if(!u){AndroidBridge.done('__REQ_ID__','{\"data\":{\"children\":[]}}');return;}"
-            + "const j=await (await fetch('/user/'+encodeURIComponent(u)+'/saved.json?limit=25&raw_json=1',{credentials:'include'})).json();"
-            + "AndroidBridge.done('__REQ_ID__',JSON.stringify(j));"
-            + "}catch(e){AndroidBridge.done('__REQ_ID__','{\"data\":{\"children\":[]}}');}})();";
-    }
-
-    public static String redditAction(String endpoint, String bodyParams) {
-        return "(async function(){let ok=false;try{"
-            + "const me=await (await fetch('/api/me.json',{credentials:'include'})).json();"
-            + "const uh=(me.data&&me.data.modhash)||'';"
-            + "const r=await fetch(" + JSONObject.quote(endpoint) + ",{method:'POST',credentials:'include',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Modhash':uh},body:" + JSONObject.quote(bodyParams) + "+'&uh='+encodeURIComponent(uh)});"
-            + "ok=r.ok;}catch(e){}AndroidBridge.done('__REQ_ID__',JSON.stringify({ok:ok}));})();";
     }
 
     public static String fbFeed(boolean scrollMore) {
